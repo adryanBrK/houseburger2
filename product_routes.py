@@ -47,16 +47,6 @@ async def listar_produtos(
     return q.all()
 
 
-@product_router.get(
-    "/produtos/{produto_id}",
-    response_model=ResponseProdutoDetalhadoSchema,
-    summary="Busca um produto pelo ID"
-)
-async def buscar_produto(produto_id: int, session: Session = Depends(pegar_sessao)):
-    """Retorna detalhes completos de um produto incluindo categoria, porção e variações"""
-    return _get_produto(produto_id, session)
-
-
 @product_router.post(
     "/produtos",
     response_model=ResponseProdutoSchema,
@@ -103,6 +93,16 @@ async def criar_produto(
         session.rollback()
         raise HTTPException(status_code=400, detail="Já existe um produto com esse nome")
     return produto
+
+
+@product_router.get(
+    "/produtos/{produto_id}",
+    response_model=ResponseProdutoDetalhadoSchema,
+    summary="Busca um produto pelo ID"
+)
+async def buscar_produto(produto_id: int, session: Session = Depends(pegar_sessao)):
+    """Retorna detalhes completos de um produto incluindo categoria, porção e variações"""
+    return _get_produto(produto_id, session)
 
 
 @product_router.put(
