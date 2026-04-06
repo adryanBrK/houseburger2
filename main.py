@@ -74,7 +74,7 @@ def raiz():
     """Endpoint de verificação de status"""
     return {
         "status": "online",
-        "message": ""🍔 API Hamburgueria - Render Deploy"",
+        "message": "🍔 API Hamburgueria - Render Deploy",
         "docs": "/docs",
         "versao": "2.2.0",
         "cors": "enabled",
