@@ -4,11 +4,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import sessionmaker
 
 from models import Base, db, Usuario
-from auth_routes    import auth_router
-from product_routes import product_router
-from order_routes   import order_router
-from sales_routes   import sales_router
-from store_routes   import store_router
+from auth_routes      import auth_router
+from product_routes   import product_router
+from order_routes     import order_router
+from sales_routes     import sales_router
+from store_routes     import store_router
+from bairro_routes    import bairro_router
+from impressora_routes import impressora_router
 
 
 def _inicializar():
@@ -45,8 +47,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS - permite requisições de qualquer origem
+# ═══════════════════════════════════════════════════════════════════
+# CORS - Lista explícita dos domínios permitidos
+# Adicione aqui qualquer outro domínio do seu frontend
+# ═══════════════════════════════════════════════════════════════════
 app.add_middleware(
+
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
@@ -56,7 +62,6 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)
 
 # Rotas
 app.include_router(auth_router)
@@ -64,6 +69,8 @@ app.include_router(product_router)
 app.include_router(order_router)
 app.include_router(sales_router)
 app.include_router(store_router)
+app.include_router(bairro_router)
+app.include_router(impressora_router)
 
 
 @app.get("/", tags=["Status"])
@@ -73,14 +80,16 @@ def raiz():
         "status": "online",
         "message": "🍔 API Hamburgueria - Vercel Deploy",
         "docs": "/docs",
-        "versao": "2.2.0"
+        "versao": "2.2.0",
+        "cors": "enabled",
+        "allowed_origins": len(ALLOWED_ORIGINS)
     }
 
 
 @app.get("/health", tags=["Status"])
 def health_check():
     """Health check para monitoramento"""
-    return {"status": "healthy"}
+    return {"status": "healthy", "database": "connected"}
 
 
 # Handler para Vercel
