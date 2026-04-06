@@ -46,11 +46,14 @@ app = FastAPI(
     version="2.2.0",
     lifespan=lifespan,
 )
-
 # ═══════════════════════════════════════════════════════════════════
 # CORS - Lista explícita dos domínios permitidos
-# Adicione aqui qualquer outro domínio do seu frontend
 # ═══════════════════════════════════════════════════════════════════
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "https://houseburger2.onrender.com",
+]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
