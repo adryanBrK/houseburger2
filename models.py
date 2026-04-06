@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine, Column, String, Integer, Boolean, Float, ForeignKey, DateTime
+from sqlalchemy import create_engine, Column, String, Integer, Boolean, Float, ForeignKey, DateTime, Text
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime, timezone
 import bcrypt
@@ -92,18 +92,62 @@ class VariacaoProduto(Base):
 
 
 # ==========================
+# BAIRROS E TAXA DE ENTREGA
+# Cada bairro tem um valor específico de entrega
+# ==========================
+class Bairro(Base):
+    __tablename__ = "bairros"
+
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    nome          = Column(String, nullable=False, unique=True)
+    valor_entrega = Column(Float, nullable=False, default=0.0)
+    ativo         = Column(Boolean, default=True)
+    criado_em     = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    pedidos = relationship("Pedido", back_populates="bairro")
+
+
+# ==========================
+# IMPRESSORAS
+# Cadastro de impressoras térmicas para cozinha e motoboy
+# ==========================
+class Impressora(Base):
+    __tablename__ = "impressoras"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    nome       = Column(String, nullable=False)             # Ex: "Impressora Cozinha Principal"
+    tipo       = Column(String, nullable=False)             # USB | REDE
+    finalidade = Column(String, nullable=False)             # COZINHA | MOTOBOY
+    
+    # Conexão
+    ip_address = Column(String, nullable=True)              # Para tipo REDE
+    porta      = Column(Integer, nullable=True)             # Para tipo REDE (ex: 9100)
+    usb_vendor = Column(String, nullable=True)              # Para tipo USB (vendor ID)
+    usb_product = Column(String, nullable=True)             # Para tipo USB (product ID)
+    
+    ativo      = Column(Boolean, default=True)
+    criado_em  = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    logs = relationship("LogImpressao", back_populates="impressora", cascade="all, delete-orphan")
+
+
+# ==========================
 # CONFIGURAÇÕES DA LOJA
+# Inclui logo e Instagram
 # ==========================
 class ConfiguracaoLoja(Base):
     __tablename__ = "configuracoes"
 
     id                    = Column(Integer, primary_key=True, default=1)
     nome_loja             = Column(String, default="Minha Hamburgueria")
-    taxa_entrega          = Column(Float, default=0.0)
     loja_aberta           = Column(Boolean, default=True)
     endereco_loja         = Column(String, nullable=True)
     telefone              = Column(String, nullable=True)
     horario_funcionamento = Column(String, nullable=True)
+    
+    # NOVOS CAMPOS
+    logo_url              = Column(String, nullable=True)   # URL da logo
+    instagram             = Column(String, nullable=True)   # @usuario ou link completo
 
 
 # ==========================
@@ -136,21 +180,53 @@ class Usuario(Base):
 
 # ==========================
 # PEDIDOS
-# forma_pagamento: DINHEIRO | PIX | CARTAO  (informado ao finalizar)
+# Novo sistema com tipo de entrega e controle de impressão
 # ==========================
 class Pedido(Base):
     __tablename__ = "pedidos"
 
     id              = Column(Integer, primary_key=True, autoincrement=True)
+    
+    # Status do pedido
     status          = Column(String, default="PENDENTE")   # PENDENTE | FINALIZADO | CANCELADO
+    
+    # Tipo de pedido
+    tipo_pedido     = Column(String, nullable=False)       # ENTREGA | BALCAO
+    
+    # Dados do cliente
+    nome_cliente    = Column(String, nullable=False)
+    telefone        = Column(String, nullable=True)
+    endereco        = Column(String, nullable=True)        # Apenas se ENTREGA
+    
+    # Valores
     preco_total     = Column(Float, default=0.0)
+    valor_entrega   = Column(Float, default=0.0)           # Preenchido automaticamente pelo bairro
+    
+    # Pagamento
     forma_pagamento = Column(String, nullable=True)        # DINHEIRO | PIX | CARTAO
+    troco_para      = Column(Float, nullable=True)         # Se pagamento em dinheiro
+    
+    # CONTROLE DE IMPRESSÃO
+    impresso_cozinha = Column(Boolean, default=False)      # Comanda cozinha impressa?
+    impresso_motoboy = Column(Boolean, default=False)      # Comanda motoboy impressa?
+    data_impressao_cozinha = Column(DateTime, nullable=True)
+    data_impressao_motoboy = Column(DateTime, nullable=True)
+    
+    # Observações
+    observacoes     = Column(Text, nullable=True)
+    
+    # Timestamps
     criado_em       = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    atualizado_em   = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
+    # Relacionamentos
     usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
+    bairro_id  = Column(Integer, ForeignKey("bairros.id"), nullable=True)
 
     usuario = relationship("Usuario", back_populates="pedidos")
+    bairro  = relationship("Bairro", back_populates="pedidos")
     itens   = relationship("ItemPedido", back_populates="pedido", cascade="all, delete-orphan")
+    logs_impressao = relationship("LogImpressao", back_populates="pedido", cascade="all, delete-orphan")
 
 
 # ==========================
@@ -165,6 +241,28 @@ class ItemPedido(Base):
     nomedoproduto  = Column(String, nullable=False)
     variacao_nome  = Column(String, nullable=True)   # ex: "Pro Max" — null se produto sem variação
     preco_unitario = Column(Float, nullable=False)   # já inclui o acréscimo da variação
+    observacoes    = Column(Text, nullable=True)     # Ex: "Sem cebola", "Ponto da carne mal passado"
 
     pedido_id = Column(Integer, ForeignKey("pedidos.id"), nullable=False)
     pedido    = relationship("Pedido", back_populates="itens")
+
+
+# ==========================
+# LOG DE IMPRESSÃO
+# Registra todas as tentativas de impressão para auditoria e retry
+# ==========================
+class LogImpressao(Base):
+    __tablename__ = "logs_impressao"
+
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    tipo_comanda  = Column(String, nullable=False)        # COZINHA | MOTOBOY
+    sucesso       = Column(Boolean, default=False)        # Impressão bem-sucedida?
+    erro          = Column(Text, nullable=True)           # Mensagem de erro se falhou
+    tentativas    = Column(Integer, default=1)            # Número de tentativas
+    criado_em     = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    pedido_id     = Column(Integer, ForeignKey("pedidos.id"), nullable=False)
+    impressora_id = Column(Integer, ForeignKey("impressoras.id"), nullable=True)
+
+    pedido     = relationship("Pedido", back_populates="logs_impressao")
+    impressora = relationship("Impressora", back_populates="logs")
