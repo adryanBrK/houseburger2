@@ -48,7 +48,7 @@ class ResponseCategoriaSchema(BaseModel):
 
 
 # ==========================
-# PORÇÃO  (só usada quando o produto realmente tem porção)
+# PORÇÃO
 # ==========================
 class PorcaoSchema(BaseModel):
     nome:  str
@@ -73,7 +73,6 @@ class ResponsePorcaoSchema(BaseModel):
 
 # ==========================
 # VARIAÇÕES DE PRODUTO
-# Ex: House Simples (acrescimo=0), House Pro (+5), House Pro Max (+10)
 # ==========================
 class VariacaoSchema(BaseModel):
     nome:      str
@@ -103,15 +102,14 @@ class ResponseVariacaoSchema(BaseModel):
 
 # ==========================
 # PRODUTO
-# porcao_id é completamente opcional — só enviar se o produto tiver porção
 # ==========================
 class ProdutoSchema(BaseModel):
     nome:         str
     descricao:    Optional[str]  = None
-    preco:        float                    # preço base
+    preco:        float
     categoria_id: int
-    porcao_id:    Optional[int]  = None   # OPCIONAL — não enviar se não tiver porção
-    imagem_url:   Optional[str]  = None   # URL externa da imagem (Cloudinary, ImgBB, etc.)
+    porcao_id:    Optional[int]  = None
+    imagem_url:   Optional[str]  = None
     disponivel:   Optional[bool] = True
 
     @field_validator("preco")
@@ -130,7 +128,7 @@ class ResponseProdutoSchema(BaseModel):
     imagem_url:   Optional[str]
     disponivel:   bool
     categoria_id: int
-    porcao_id:    Optional[int]    # null quando sem porção
+    porcao_id:    Optional[int]
     variacoes:    List[ResponseVariacaoSchema] = []
 
     class Config:
@@ -139,7 +137,80 @@ class ResponseProdutoSchema(BaseModel):
 
 class ResponseProdutoDetalhadoSchema(ResponseProdutoSchema):
     categoria: Optional[ResponseCategoriaSchema]
-    porcao:    Optional[ResponsePorcaoSchema]    # null quando sem porção
+    porcao:    Optional[ResponsePorcaoSchema]
+
+    class Config:
+        from_attributes = True
+
+
+# ==========================
+# BAIRROS
+# ==========================
+class BairroSchema(BaseModel):
+    nome:          str
+    valor_entrega: float
+    ativo:         Optional[bool] = True
+
+    @field_validator("valor_entrega")
+    @classmethod
+    def valor_nao_negativo(cls, v):
+        if v < 0:
+            raise ValueError("Valor de entrega não pode ser negativo")
+        return v
+
+
+class ResponseBairroSchema(BaseModel):
+    id:            int
+    nome:          str
+    valor_entrega: float
+    ativo:         bool
+    criado_em:     datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ==========================
+# IMPRESSORAS
+# ==========================
+class ImpressoraSchema(BaseModel):
+    nome:        str
+    tipo:        str                    # USB | REDE
+    finalidade:  str                    # COZINHA | MOTOBOY
+    ip_address:  Optional[str] = None   # Para REDE
+    porta:       Optional[int] = None   # Para REDE
+    usb_vendor:  Optional[str] = None   # Para USB
+    usb_product: Optional[str] = None   # Para USB
+    ativo:       Optional[bool] = True
+
+    @field_validator("tipo")
+    @classmethod
+    def tipo_valido(cls, v):
+        v = v.upper()
+        if v not in ["USB", "REDE"]:
+            raise ValueError("Tipo deve ser USB ou REDE")
+        return v
+
+    @field_validator("finalidade")
+    @classmethod
+    def finalidade_valida(cls, v):
+        v = v.upper()
+        if v not in ["COZINHA", "MOTOBOY"]:
+            raise ValueError("Finalidade deve ser COZINHA ou MOTOBOY")
+        return v
+
+
+class ResponseImpressoraSchema(BaseModel):
+    id:          int
+    nome:        str
+    tipo:        str
+    finalidade:  str
+    ip_address:  Optional[str]
+    porta:       Optional[int]
+    usb_vendor:  Optional[str]
+    usb_product: Optional[str]
+    ativo:       bool
+    criado_em:   datetime
 
     class Config:
         from_attributes = True
@@ -147,13 +218,13 @@ class ResponseProdutoDetalhadoSchema(ResponseProdutoSchema):
 
 # ==========================
 # ITENS DO PEDIDO
-# variacao_id: opcional — só enviar se o cliente escolheu uma variação
 # ==========================
 class ItemPedidoSchema(BaseModel):
     quantidade:    int
     nomedoproduto: str
     preco_unitario: float
-    variacao_id:   Optional[int] = None   # ID da VariacaoProduto escolhida (opcional)
+    variacao_id:   Optional[int] = None
+    observacoes:   Optional[str] = None
 
     @field_validator("quantidade")
     @classmethod
@@ -170,8 +241,9 @@ class ResponseItemPedidoSchema(BaseModel):
     id:             int
     quantidade:     int
     nomedoproduto:  str
-    variacao_nome:  Optional[str]    # nome da variação ou null
+    variacao_nome:  Optional[str]
     preco_unitario: float
+    observacoes:    Optional[str]
     subtotal:       float = 0.0
 
     class Config:
@@ -180,20 +252,35 @@ class ResponseItemPedidoSchema(BaseModel):
 
 # ==========================
 # PEDIDO
-# forma_pagamento informada ao finalizar: DINHEIRO | PIX | CARTAO
 # ==========================
 FORMAS_PAGAMENTO_VALIDAS = {"DINHEIRO", "PIX", "CARTAO"}
+TIPOS_PEDIDO_VALIDOS = {"ENTREGA", "BALCAO"}
 
 
 class PedidoSchema(BaseModel):
-    id_usuario: int
+    id_usuario:     int
+    tipo_pedido:    str                     # ENTREGA | BALCAO
+    nome_cliente:   str
+    telefone:       Optional[str] = None
+    endereco:       Optional[str] = None
+    bairro_id:      Optional[int] = None    # Se ENTREGA
+    observacoes:    Optional[str] = None
+
+    @field_validator("tipo_pedido")
+    @classmethod
+    def tipo_valido(cls, v):
+        v = v.upper()
+        if v not in TIPOS_PEDIDO_VALIDOS:
+            raise ValueError(f"Tipo deve ser: {', '.join(TIPOS_PEDIDO_VALIDOS)}")
+        return v
 
     class Config:
         from_attributes = True
 
 
 class FinalizarPedidoSchema(BaseModel):
-    forma_pagamento: str   # DINHEIRO | PIX | CARTAO
+    forma_pagamento: str
+    troco_para:      Optional[float] = None
 
     @field_validator("forma_pagamento")
     @classmethod
@@ -207,11 +294,34 @@ class FinalizarPedidoSchema(BaseModel):
 class ResponsePedidoSchema(BaseModel):
     id:              int
     status:          str
+    tipo_pedido:     str
+    nome_cliente:    str
+    telefone:        Optional[str]
+    endereco:        Optional[str]
     preco_total:     float
+    valor_entrega:   float
     forma_pagamento: Optional[str]
+    troco_para:      Optional[float]
+    observacoes:     Optional[str]
+    
+    # Controle de impressão
+    impresso_cozinha: bool
+    impresso_motoboy: bool
+    data_impressao_cozinha: Optional[datetime]
+    data_impressao_motoboy: Optional[datetime]
+    
     criado_em:       datetime
+    atualizado_em:   datetime
     usuario_id:      int
+    bairro_id:       Optional[int]
     itens:           List[ResponseItemPedidoSchema] = []
+
+    class Config:
+        from_attributes = True
+
+
+class ResponsePedidoDetalhadoSchema(ResponsePedidoSchema):
+    bairro: Optional[ResponseBairroSchema]
 
     class Config:
         from_attributes = True
@@ -222,21 +332,40 @@ class ResponsePedidoSchema(BaseModel):
 # ==========================
 class ConfiguracaoLojaSchema(BaseModel):
     nome_loja:             Optional[str]   = None
-    taxa_entrega:          Optional[float] = None
     loja_aberta:           Optional[bool]  = None
     endereco_loja:         Optional[str]   = None
     telefone:              Optional[str]   = None
     horario_funcionamento: Optional[str]   = None
+    logo_url:              Optional[str]   = None
+    instagram:             Optional[str]   = None
 
 
 class ResponseConfiguracaoLojaSchema(BaseModel):
     id:                    int
     nome_loja:             str
-    taxa_entrega:          float
     loja_aberta:           bool
     endereco_loja:         Optional[str]
     telefone:              Optional[str]
     horario_funcionamento: Optional[str]
+    logo_url:              Optional[str]
+    instagram:             Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
+# ==========================
+# LOG DE IMPRESSÃO
+# ==========================
+class ResponseLogImpressaoSchema(BaseModel):
+    id:            int
+    tipo_comanda:  str
+    sucesso:       bool
+    erro:          Optional[str]
+    tentativas:    int
+    criado_em:     datetime
+    pedido_id:     int
+    impressora_id: Optional[int]
 
     class Config:
         from_attributes = True
@@ -249,7 +378,7 @@ class ResumoFormasPagamentoSchema(BaseModel):
     dinheiro:      float
     pix:           float
     cartao:        float
-    nao_informado: float   # pedidos finalizados sem forma de pagamento registrada
+    nao_informado: float
 
 
 class ResponseVendasSchema(BaseModel):
