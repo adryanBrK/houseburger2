@@ -52,14 +52,10 @@ app = FastAPI(
 # Adicione aqui qualquer outro domínio do seu frontend
 # ═══════════════════════════════════════════════════════════════════
 ALLOWED_ORIGINS = [
-    "https://house-burgers.vercel.app",      # Frontend produção 1
-    "https://houseburger2.vercel.app",       # Backend/API (Swagger)
-    "http://localhost",                      # Dev local
-    "http://localhost:3000",                 # React dev
-    "http://localhost:5500",                 # Live Server
-    "http://localhost:5173",                 # Vite dev
-    "http://127.0.0.1:5500",                 # Live Server alternativo
-    "http://127.0.0.1:3000",                 # React alternativo
+    "https://house-burgers.vercel.app",   # seu frontend (ESSENCIAL)
+    "https://houseburger2.onrender.com",  # sua API real (ESSENCIAL)
+    "http://localhost:3000",              # dev React
+    "http://localhost:5173",              # dev Vite
 ]
 
 app.add_middleware(
@@ -86,7 +82,7 @@ def raiz():
     """Endpoint de verificação de status"""
     return {
         "status": "online",
-        "message": "🍔 API Hamburgueria - Vercel Deploy",
+        "message": "🍔 API Hamburgueria - Render Deploy",
         "docs": "/docs",
         "versao": "2.2.0",
         "cors": "enabled",
