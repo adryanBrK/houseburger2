@@ -46,25 +46,31 @@ app = FastAPI(
     version="2.2.0",
     lifespan=lifespan,
 )
+
 # ═══════════════════════════════════════════════════════════════════
 # CORS - Lista explícita dos domínios permitidos
+# Adicione aqui qualquer outro domínio do seu frontend
 # ═══════════════════════════════════════════════════════════════════
-from fastapi.middleware.cors import CORSMiddleware
-
 ALLOWED_ORIGINS = [
-    "http://127.0.0.1:5500",
-    "http://localhost:5500",
-    "http://localhost:3000",
-    "https://house-burgers.vercel.app"
+    "https://house-burgers.vercel.app",      # Frontend produção 1
+    "https://houseburger2.vercel.app",       # Backend/API (Swagger)
+    "http://localhost",                      # Dev local
+    "http://localhost:3000",                 # React dev
+    "http://localhost:5500",                 # Live Server
+    "http://localhost:5173",                 # Vite dev
+    "http://127.0.0.1:5500",                 # Live Server alternativo
+    "http://127.0.0.1:3000",                 # React alternativo
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,           # Lista de origens permitidas
+    allow_credentials=True,                  # Permite cookies/credenciais
+    allow_methods=["*"],                     # Permite todos os métodos (GET, POST, etc)
+    allow_headers=["*"],                     # Permite todos os headers
+    expose_headers=["*"],                    # Expõe todos os headers na resposta
 )
+
 # Rotas
 app.include_router(auth_router)
 app.include_router(product_router)
@@ -80,7 +86,7 @@ def raiz():
     """Endpoint de verificação de status"""
     return {
         "status": "online",
-        "message": "🍔 API Hamburgueria - Render Deploy",
+        "message": "🍔 API Hamburgueria - Vercel Deploy",
         "docs": "/docs",
         "versao": "2.2.0",
         "cors": "enabled",
