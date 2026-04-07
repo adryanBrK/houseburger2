@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+import traceback
 
 from dependencias import pegar_sessao, verificar_admin
 from schemas import ConfiguracaoLojaSchema, ResponseConfiguracaoLojaSchema
@@ -9,41 +10,70 @@ store_router = APIRouter(prefix="/Loja", tags=["Configurações da Loja"])
 
 
 def _config(session: Session) -> ConfiguracaoLoja:
-    c = session.query(ConfiguracaoLoja).filter(ConfiguracaoLoja.id == 1).first()
-    if not c:
-        c = ConfiguracaoLoja(id=1)
-        session.add(c)
-        session.commit()
-        session.refresh(c)
-    return c
+    try:
+        c = session.query(ConfiguracaoLoja).filter(ConfiguracaoLoja.id == 1).first()
+        if not c:
+            c = ConfiguracaoLoja(id=1)
+            session.add(c)
+            session.commit()
+            session.refresh(c)
+        return c
+    except Exception as e:
+        print("ERRO AO BUSCAR CONFIG:", e)
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Erro ao carregar configuração da loja")
 
 
-@store_router.get("/", response_model=ResponseConfiguracaoLojaSchema, summary="Configurações da loja")
+@store_router.get("/", response_model=ResponseConfiguracaoLojaSchema)
 async def ver(session: Session = Depends(pegar_sessao)):
     return _config(session)
 
 
-@store_router.put("/", response_model=ResponseConfiguracaoLojaSchema, summary="Atualiza configurações (somente admin)")
+@store_router.put("/", response_model=ResponseConfiguracaoLojaSchema)
 async def atualizar(
     dados: ConfiguracaoLojaSchema,
     session: Session = Depends(pegar_sessao),
     _: Usuario = Depends(verificar_admin),
 ):
-    c = _config(session)
-    if dados.nome_loja             is not None: c.nome_loja             = dados.nome_loja
-    if dados.taxa_entrega          is not None: c.taxa_entrega          = dados.taxa_entrega
-    if dados.loja_aberta           is not None: c.loja_aberta           = dados.loja_aberta
-    if dados.endereco_loja         is not None: c.endereco_loja         = dados.endereco_loja
-    if dados.telefone              is not None: c.telefone              = dados.telefone
-    if dados.horario_funcionamento is not None: c.horario_funcionamento = dados.horario_funcionamento
-    session.commit()
-    session.refresh(c)
-    return c
+    try:
+        c = _config(session)
+
+        # Atualização segura
+        update_data = dados.dict(exclude_unset=True)
+
+        for key, value in update_data.items():
+            if hasattr(c, key):
+                setattr(c, key, value)
+
+        session.commit()
+        session.refresh(c)
+
+        return c
+
+    except Exception as e:
+        print("🔥 ERRO AO ATUALIZAR LOJA:", str(e))
+        traceback.print_exc()
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro interno ao atualizar loja: {str(e)}"
+        )
 
 
-@store_router.patch("/status", summary="Abre ou fecha a loja (somente admin)")
-async def status(aberta: bool, session: Session = Depends(pegar_sessao), _: Usuario = Depends(verificar_admin)):
-    c = _config(session)
-    c.loja_aberta = aberta
-    session.commit()
-    return {"mensagem": f"Loja {'aberta' if aberta else 'fechada'} com sucesso"}
+@store_router.patch("/status")
+async def status(
+    aberta: bool,
+    session: Session = Depends(pegar_sessao),
+    _: Usuario = Depends(verificar_admin)
+):
+    try:
+        c = _config(session)
+        c.loja_aberta = aberta
+        session.commit()
+
+        return {"mensagem": f"Loja {'aberta' if aberta else 'fechada'} com sucesso"}
+
+    except Exception as e:
+        print("ERRO AO ALTERAR STATUS:", e)
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Erro ao alterar status")
