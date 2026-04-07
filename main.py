@@ -51,13 +51,15 @@ app = FastAPI(
 # ═══════════════════════════════════════════════════════════════════
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
+    "http://localhost:5500",
+    "http://127.0.0.1:5500",
     "https://houseburger2.onrender.com",
+    "https://house-burgers.vercel.app",  # 🔥 ESSA LINHA RESOLVE
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_origin_regex=r"https://houseburger2.onrender.com",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
