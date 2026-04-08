@@ -1,6 +1,7 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 
 from dependencias import pegar_sessao, verificar_token, verificar_admin
 from schemas import (
@@ -9,9 +10,46 @@ from schemas import (
     PedidoSchema, ResponsePedidoSchema,
     ItemPedidoSchema, FinalizarPedidoSchema,
 )
-from models import Categoria, Porcao, Pedido, ItemPedido, VariacaoProduto, Usuario
+from models import (
+    Categoria, Porcao, Pedido, ItemPedido, VariacaoProduto,
+    Bairro, Usuario, StatusPedido,
+)
+
+logger = logging.getLogger("order_routes")
+logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(name)s | %(message)s")
 
 order_router = APIRouter(prefix="/Pedidos", tags=["Pedidos"])
+
+
+# ────────────────────────────────────────────────────────────────────
+# HELPER: gerar código legível de pedido
+# Formato: "1001", "1002", … baseado no ID após o INSERT.
+# ────────────────────────────────────────────────────────────────────
+def _gerar_codigo(pedido_id: int) -> str:
+    """Retorna um código de 4 dígitos com base no ID (ex: #1023)."""
+    return str(1000 + pedido_id)
+
+
+# ────────────────────────────────────────────────────────────────────
+# HELPER: verificar persistência real no banco
+# ────────────────────────────────────────────────────────────────────
+def _verificar_persistencia(pedido_id: int, session: Session) -> Pedido:
+    """
+    Após commit, faz uma query independente para confirmar que o pedido
+    realmente foi salvo. Lança HTTP 500 se não encontrar.
+    """
+    pedido_salvo = session.query(Pedido).filter(Pedido.id == pedido_id).first()
+    if not pedido_salvo:
+        logger.error("FALHA DE PERSISTÊNCIA — pedido %s não encontrado após commit", pedido_id)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Pedido criado mas não confirmado no banco de dados. "
+                "Verifique a conexão com o PostgreSQL e tente novamente."
+            ),
+        )
+    logger.info("✅ Persistência confirmada — pedido #%s (id=%s)", pedido_salvo.codigo, pedido_id)
+    return pedido_salvo
 
 
 # ============================================================
@@ -27,12 +65,12 @@ async def listar_categorias(session: Session = Depends(pegar_sessao)):
     "/categorias",
     response_model=ResponseCategoriaSchema,
     status_code=status.HTTP_201_CREATED,
-    summary="Cria categoria (somente admin)"
+    summary="Cria categoria (somente admin)",
 )
 async def criar_categoria(
-    dados: CategoriaSchema,
-    session: Session = Depends(pegar_sessao),
-    _: Usuario = Depends(verificar_admin),
+    dados:   CategoriaSchema,
+    session: Session  = Depends(pegar_sessao),
+    _:       Usuario  = Depends(verificar_admin),
 ):
     nova = Categoria(nome=dados.nome, descricao=dados.descricao)
     session.add(nova)
@@ -48,13 +86,13 @@ async def criar_categoria(
 @order_router.put(
     "/categorias/{categoria_id}",
     response_model=ResponseCategoriaSchema,
-    summary="Edita categoria (somente admin)"
+    summary="Edita categoria (somente admin)",
 )
 async def editar_categoria(
     categoria_id: int,
-    dados: CategoriaSchema,
+    dados:   CategoriaSchema,
     session: Session = Depends(pegar_sessao),
-    _: Usuario = Depends(verificar_admin),
+    _:       Usuario = Depends(verificar_admin),
 ):
     cat = session.query(Categoria).filter(Categoria.id == categoria_id).first()
     if not cat:
@@ -72,7 +110,7 @@ async def editar_categoria(
 async def deletar_categoria(
     categoria_id: int,
     session: Session = Depends(pegar_sessao),
-    _: Usuario = Depends(verificar_admin),
+    _:       Usuario = Depends(verificar_admin),
 ):
     cat = session.query(Categoria).filter(Categoria.id == categoria_id).first()
     if not cat:
@@ -95,12 +133,12 @@ async def listar_porcoes(session: Session = Depends(pegar_sessao)):
     "/porcoes",
     response_model=ResponsePorcaoSchema,
     status_code=status.HTTP_201_CREATED,
-    summary="Cria porção (somente admin)"
+    summary="Cria porção (somente admin)",
 )
 async def criar_porcao(
-    dados: PorcaoSchema,
+    dados:   PorcaoSchema,
     session: Session = Depends(pegar_sessao),
-    _: Usuario = Depends(verificar_admin),
+    _:       Usuario = Depends(verificar_admin),
 ):
     nova = Porcao(nome=dados.nome, preco=dados.preco)
     session.add(nova)
@@ -116,13 +154,13 @@ async def criar_porcao(
 @order_router.put(
     "/porcoes/{porcao_id}",
     response_model=ResponsePorcaoSchema,
-    summary="Edita porção (somente admin)"
+    summary="Edita porção (somente admin)",
 )
 async def editar_porcao(
     porcao_id: int,
-    dados: PorcaoSchema,
+    dados:   PorcaoSchema,
     session: Session = Depends(pegar_sessao),
-    _: Usuario = Depends(verificar_admin),
+    _:       Usuario = Depends(verificar_admin),
 ):
     porcao = session.query(Porcao).filter(Porcao.id == porcao_id).first()
     if not porcao:
@@ -138,7 +176,7 @@ async def editar_porcao(
 async def deletar_porcao(
     porcao_id: int,
     session: Session = Depends(pegar_sessao),
-    _: Usuario = Depends(verificar_admin),
+    _:       Usuario = Depends(verificar_admin),
 ):
     porcao = session.query(Porcao).filter(Porcao.id == porcao_id).first()
     if not porcao:
@@ -149,53 +187,125 @@ async def deletar_porcao(
 
 
 # ============================================================
-# PEDIDOS
+# PEDIDOS — CRIAÇÃO PÚBLICA (sem login)
 # ============================================================
 
 @order_router.post(
     "/pedidos",
     response_model=ResponsePedidoSchema,
     status_code=status.HTTP_201_CREATED,
-    summary="Cria um novo pedido"
+    summary="Cria um novo pedido (público — sem necessidade de login)",
 )
 async def criar_pedido(
-    dados: PedidoSchema,
+    dados:   PedidoSchema,
     session: Session = Depends(pegar_sessao),
-    usuario: Usuario = Depends(verificar_token),
 ):
-    if not usuario.admin and usuario.id != dados.id_usuario:
-        raise HTTPException(status_code=403, detail="Você só pode criar pedidos para si mesmo")
+    """
+    ## Criação de pedido — endpoint público
 
-    pedido = Pedido(usuario_id=dados.id_usuario)
-    session.add(pedido)
-    session.commit()
-    session.refresh(pedido)
-    return pedido
+    O cliente NÃO precisa de conta para fazer um pedido.
 
+    **Campos obrigatórios:**
+    - `nome_cliente` — nome do cliente
+    - `telefone`     — telefone para contato
+    - `tipo_pedido`  — `ENTREGA` ou `RETIRADA`
+
+    **Condicional:**
+    - `endereco` e `bairro_id` — obrigatórios se `tipo_pedido == ENTREGA`
+    """
+    logger.info(
+        "Novo pedido recebido | cliente: %s | tipo: %s",
+        dados.nome_cliente,
+        dados.tipo_pedido,
+    )
+
+    # ── 1. Verificar se a loja está aberta (opcional — comente se quiser ignorar)
+    # config = session.query(ConfiguracaoLoja).filter(ConfiguracaoLoja.id == 1).first()
+    # if config and not config.loja_aberta:
+    #     raise HTTPException(status_code=400, detail="A loja está fechada no momento")
+
+    # ── 2. Calcular valor de entrega a partir do bairro
+    valor_entrega = 0.0
+    if dados.bairro_id:
+        bairro = session.query(Bairro).filter(
+            Bairro.id == dados.bairro_id, Bairro.ativo == True
+        ).first()
+        if not bairro:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Bairro id={dados.bairro_id} não encontrado ou inativo",
+            )
+        valor_entrega = bairro.valor_entrega
+        logger.info("Bairro: %s | taxa de entrega: R$ %.2f", bairro.nome, valor_entrega)
+
+    # ── 3. Criar o pedido (status PENDENTE, código gerado após INSERT)
+    pedido = Pedido(
+        nome_cliente  = dados.nome_cliente.strip(),
+        telefone      = dados.telefone.strip(),
+        endereco      = dados.endereco.strip() if dados.endereco else None,
+        tipo_pedido   = dados.tipo_pedido,
+        bairro_id     = dados.bairro_id,
+        valor_entrega = valor_entrega,
+        observacoes   = dados.observacoes,
+        status        = StatusPedido.PENDENTE,
+        # usuario_id é opcional — preenchido somente pelo painel admin
+        usuario_id    = dados.id_usuario,
+    )
+
+    try:
+        session.add(pedido)
+        session.flush()   # gera o ID sem fechar a transação
+
+        # ── 4. Gerar código legível (ex: "1023") usando o ID já disponível
+        pedido.codigo = _gerar_codigo(pedido.id)
+
+        session.commit()
+        logger.info("Commit realizado | id=%s | codigo=%s", pedido.id, pedido.codigo)
+
+    except Exception as exc:
+        session.rollback()
+        logger.error("Erro ao criar pedido: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro interno ao salvar pedido: {str(exc)}",
+        )
+
+    # ── 5. Verificação de persistência real
+    pedido_confirmado = _verificar_persistencia(pedido.id, session)
+
+    return pedido_confirmado
+
+
+# ============================================================
+# PEDIDOS — ADMIN
+# ============================================================
 
 @order_router.get(
     "/listar",
     response_model=List[ResponsePedidoSchema],
-    summary="Lista todos os pedidos (somente admin)"
+    summary="Lista todos os pedidos (somente admin)",
 )
 async def listar_todos_pedidos(
-    status_filtro:   str = None,
-    forma_pagamento: str = None,
-    session: Session = Depends(pegar_sessao),
-    _: Usuario = Depends(verificar_admin),
+    status_filtro:    Optional[str] = None,
+    forma_pagamento:  Optional[str] = None,
+    tipo_pedido:      Optional[str] = None,
+    session: Session  = Depends(pegar_sessao),
+    _:       Usuario  = Depends(verificar_admin),
 ):
     q = session.query(Pedido)
     if status_filtro:
         q = q.filter(Pedido.status == status_filtro.upper())
     if forma_pagamento:
         q = q.filter(Pedido.forma_pagamento == forma_pagamento.upper())
+    if tipo_pedido:
+        q = q.filter(Pedido.tipo_pedido == tipo_pedido.upper())
     return q.order_by(Pedido.criado_em.desc()).all()
 
 
 @order_router.get(
     "/meus-pedidos",
     response_model=List[ResponsePedidoSchema],
-    summary="Lista os pedidos do usuário logado"
+    summary="Lista os pedidos do usuário logado",
 )
 async def listar_meus_pedidos(
     session: Session = Depends(pegar_sessao),
@@ -212,12 +322,12 @@ async def listar_meus_pedidos(
 @order_router.get(
     "/pedido/{pedido_id}",
     response_model=ResponsePedidoSchema,
-    summary="Visualiza um pedido"
+    summary="Visualiza um pedido (admin ou dono)",
 )
 async def visualizar_pedido(
     pedido_id: int,
-    session:  Session = Depends(pegar_sessao),
-    usuario:  Usuario = Depends(verificar_token),
+    session:   Session = Depends(pegar_sessao),
+    usuario:   Usuario = Depends(verificar_token),
 ):
     pedido = session.query(Pedido).filter(Pedido.id == pedido_id).first()
     if not pedido:
@@ -227,64 +337,95 @@ async def visualizar_pedido(
     return pedido
 
 
+@order_router.get(
+    "/buscar/{codigo}",
+    response_model=ResponsePedidoSchema,
+    summary="Busca pedido pelo código (ex: 1023) — público",
+)
+async def buscar_pedido_por_codigo(
+    codigo:  str,
+    session: Session = Depends(pegar_sessao),
+):
+    """Permite que o cliente consulte o status do próprio pedido pelo código."""
+    pedido = session.query(Pedido).filter(Pedido.codigo == codigo).first()
+    if not pedido:
+        raise HTTPException(status_code=404, detail=f"Pedido #{codigo} não encontrado")
+    return pedido
+
+
+# ============================================================
+# ITENS DO PEDIDO
+# ============================================================
+
 @order_router.post(
     "/pedido/adicionar-item/{pedido_id}",
-    summary="Adiciona item ao pedido. Se o produto tiver variações, envie variacao_id."
+    summary="Adiciona item ao pedido (dono ou admin)",
 )
 async def adicionar_item(
     pedido_id: int,
-    dados:   ItemPedidoSchema,
-    session: Session = Depends(pegar_sessao),
-    usuario: Usuario = Depends(verificar_token),
+    dados:     ItemPedidoSchema,
+    session:   Session = Depends(pegar_sessao),
+    usuario:   Usuario = Depends(verificar_token),
 ):
     pedido = session.query(Pedido).filter(Pedido.id == pedido_id).first()
     if not pedido:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
     if not usuario.admin and usuario.id != pedido.usuario_id:
         raise HTTPException(status_code=403, detail="Acesso negado")
-    if pedido.status != "PENDENTE":
+    if pedido.status != StatusPedido.PENDENTE:
         raise HTTPException(status_code=400, detail=f"Pedido já está {pedido.status}")
 
-    # Se enviou variacao_id, busca a variação e calcula o preço real
     variacao_nome  = None
     preco_unitario = dados.preco_unitario
 
     if dados.variacao_id is not None:
-        variacao = session.query(VariacaoProduto).filter(VariacaoProduto.id == dados.variacao_id).first()
+        variacao = session.query(VariacaoProduto).filter(
+            VariacaoProduto.id == dados.variacao_id
+        ).first()
         if not variacao:
             raise HTTPException(status_code=404, detail="Variação não encontrada")
         if not variacao.disponivel:
-            raise HTTPException(status_code=400, detail=f"Variação '{variacao.nome}' está indisponível")
-
+            raise HTTPException(
+                status_code=400,
+                detail=f"Variação '{variacao.nome}' está indisponível",
+            )
         variacao_nome  = variacao.nome
-        preco_unitario = dados.preco_unitario + variacao.acrescimo  # preço base + acréscimo
+        preco_unitario = dados.preco_unitario + variacao.acrescimo
 
     item = ItemPedido(
-        quantidade=dados.quantidade,
-        nomedoproduto=dados.nomedoproduto,
-        variacao_nome=variacao_nome,
-        preco_unitario=preco_unitario,
-        pedido_id=pedido_id,
+        quantidade    = dados.quantidade,
+        nomedoproduto = dados.nomedoproduto,
+        variacao_nome = variacao_nome,
+        preco_unitario= preco_unitario,
+        observacoes   = dados.observacoes,
+        pedido_id     = pedido_id,
     )
     session.add(item)
     session.flush()
 
-    pedido.preco_total = sum(i.preco_unitario * i.quantidade for i in pedido.itens)
+    # Recalcular total (itens + entrega)
+    subtotal_itens  = sum(i.preco_unitario * i.quantidade for i in pedido.itens)
+    pedido.preco_total = subtotal_itens + pedido.valor_entrega
+
     session.commit()
     session.refresh(item)
+    logger.info(
+        "Item adicionado | pedido=%s | produto=%s | qty=%s | preço=%.2f",
+        pedido_id, dados.nomedoproduto, dados.quantidade, preco_unitario,
+    )
 
     return {
-        "mensagem":      "Item adicionado com sucesso",
-        "item_id":       item.id,
-        "variacao":      variacao_nome,
+        "mensagem":       "Item adicionado com sucesso",
+        "item_id":        item.id,
+        "variacao":       variacao_nome,
         "preco_unitario": preco_unitario,
-        "preco_total":   pedido.preco_total,
+        "preco_total":    pedido.preco_total,
     }
 
 
 @order_router.delete(
     "/pedido/remover-item/{item_id}",
-    summary="Remove um item do pedido"
+    summary="Remove um item do pedido",
 )
 async def remover_item(
     item_id: int,
@@ -298,12 +439,14 @@ async def remover_item(
     pedido = item.pedido
     if not usuario.admin and usuario.id != pedido.usuario_id:
         raise HTTPException(status_code=403, detail="Acesso negado")
-    if pedido.status != "PENDENTE":
+    if pedido.status != StatusPedido.PENDENTE:
         raise HTTPException(status_code=400, detail=f"Pedido já está {pedido.status}")
 
     session.delete(item)
     session.flush()
-    pedido.preco_total = sum(i.preco_unitario * i.quantidade for i in pedido.itens)
+
+    subtotal_itens = sum(i.preco_unitario * i.quantidade for i in pedido.itens)
+    pedido.preco_total = subtotal_itens + pedido.valor_entrega
     session.commit()
 
     return {
@@ -313,55 +456,107 @@ async def remover_item(
     }
 
 
+# ============================================================
+# FINALIZAR / CANCELAR  (somente admin)
+# ============================================================
+
 @order_router.post(
     "/pedido/finalizar/{pedido_id}",
     response_model=ResponsePedidoSchema,
-    summary="Finaliza o pedido informando a forma de pagamento: DINHEIRO | PIX | CARTAO"
+    summary="Finaliza o pedido — DINHEIRO | PIX | CARTAO (somente admin)",
 )
 async def finalizar_pedido(
     pedido_id: int,
-    dados:   FinalizarPedidoSchema,
-    session: Session = Depends(pegar_sessao),
-    usuario: Usuario = Depends(verificar_token),
+    dados:     FinalizarPedidoSchema,
+    session:   Session = Depends(pegar_sessao),
+    _:         Usuario = Depends(verificar_admin),
 ):
     pedido = session.query(Pedido).filter(Pedido.id == pedido_id).first()
     if not pedido:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
-    if not usuario.admin and usuario.id != pedido.usuario_id:
-        raise HTTPException(status_code=403, detail="Acesso negado")
-    if pedido.status != "PENDENTE":
+    if pedido.status != StatusPedido.PENDENTE:
         raise HTTPException(status_code=400, detail=f"Pedido já está {pedido.status}")
     if not pedido.itens:
         raise HTTPException(status_code=400, detail="Não é possível finalizar pedido sem itens")
 
-    pedido.status          = "FINALIZADO"
-    pedido.forma_pagamento = dados.forma_pagamento   # DINHEIRO | PIX | CARTAO
+    pedido.status          = StatusPedido.FINALIZADO
+    pedido.forma_pagamento = dados.forma_pagamento
+    pedido.troco_para      = dados.troco_para
     session.commit()
     session.refresh(pedido)
+
+    logger.info(
+        "Pedido finalizado | id=%s | pagamento=%s | total=R$ %.2f",
+        pedido.id, pedido.forma_pagamento, pedido.preco_total,
+    )
     return pedido
 
 
 @order_router.post(
     "/pedido/cancelar/{pedido_id}",
     response_model=ResponsePedidoSchema,
-    summary="Cancela um pedido"
+    summary="Cancela um pedido (somente admin)",
 )
 async def cancelar_pedido(
     pedido_id: int,
-    session: Session = Depends(pegar_sessao),
-    usuario: Usuario = Depends(verificar_token),
+    session:   Session = Depends(pegar_sessao),
+    _:         Usuario = Depends(verificar_admin),
 ):
     pedido = session.query(Pedido).filter(Pedido.id == pedido_id).first()
     if not pedido:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
-    if not usuario.admin and usuario.id != pedido.usuario_id:
-        raise HTTPException(status_code=403, detail="Acesso negado")
-    if pedido.status == "CANCELADO":
+    if pedido.status == StatusPedido.CANCELADO:
         raise HTTPException(status_code=400, detail="Pedido já está cancelado")
-    if pedido.status == "FINALIZADO":
+    if pedido.status == StatusPedido.FINALIZADO:
         raise HTTPException(status_code=400, detail="Pedido finalizado não pode ser cancelado")
 
-    pedido.status = "CANCELADO"
+    pedido.status = StatusPedido.CANCELADO
     session.commit()
     session.refresh(pedido)
+
+    logger.info("Pedido cancelado | id=%s", pedido.id)
     return pedido
+
+
+# ============================================================
+# DEBUG — verificar persistência no banco  (somente admin)
+# ============================================================
+
+@order_router.get(
+    "/debug/pedidos",
+    summary="[DEBUG] Verifica persistência — total e últimos 5 pedidos (somente admin)",
+    tags=["Debug"],
+)
+async def debug_pedidos(
+    session: Session = Depends(pegar_sessao),
+    _:       Usuario = Depends(verificar_admin),
+):
+    """
+    Endpoint de diagnóstico. Use para confirmar que os pedidos estão
+    sendo salvos no PostgreSQL após reloads ou redeploys.
+    """
+    total = session.query(Pedido).count()
+    ultimos = (
+        session.query(Pedido)
+        .order_by(Pedido.criado_em.desc())
+        .limit(5)
+        .all()
+    )
+
+    return {
+        "banco":        "PostgreSQL" if "postgresql" in str(session.bind.url) else "SQLite",
+        "total_pedidos": total,
+        "ultimos_5": [
+            {
+                "id":           p.id,
+                "codigo":       p.codigo,
+                "nome_cliente": p.nome_cliente,
+                "telefone":     p.telefone,
+                "tipo_pedido":  p.tipo_pedido,
+                "status":       p.status,
+                "preco_total":  p.preco_total,
+                "criado_em":    p.criado_em.isoformat() if p.criado_em else None,
+            }
+            for p in ultimos
+        ],
+    }
