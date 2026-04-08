@@ -1,6 +1,8 @@
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from typing import Optional, List
 from datetime import datetime
+
+from models import StatusPedido, TipoPedido, FormaPagamento
 
 
 # ==========================
@@ -75,9 +77,9 @@ class ResponsePorcaoSchema(BaseModel):
 # VARIAÇÕES DE PRODUTO
 # ==========================
 class VariacaoSchema(BaseModel):
-    nome:      str
-    descricao: Optional[str] = None
-    acrescimo: float = 0.0
+    nome:       str
+    descricao:  Optional[str] = None
+    acrescimo:  float = 0.0
     disponivel: Optional[bool] = True
 
     @field_validator("acrescimo")
@@ -175,12 +177,12 @@ class ResponseBairroSchema(BaseModel):
 # ==========================
 class ImpressoraSchema(BaseModel):
     nome:        str
-    tipo:        str                    # USB | REDE
-    finalidade:  str                    # COZINHA | MOTOBOY
-    ip_address:  Optional[str] = None   # Para REDE
-    porta:       Optional[int] = None   # Para REDE
-    usb_vendor:  Optional[str] = None   # Para USB
-    usb_product: Optional[str] = None   # Para USB
+    tipo:        str
+    finalidade:  str
+    ip_address:  Optional[str] = None
+    porta:       Optional[int] = None
+    usb_vendor:  Optional[str] = None
+    usb_product: Optional[str] = None
     ativo:       Optional[bool] = True
 
     @field_validator("tipo")
@@ -220,11 +222,11 @@ class ResponseImpressoraSchema(BaseModel):
 # ITENS DO PEDIDO
 # ==========================
 class ItemPedidoSchema(BaseModel):
-    quantidade:    int
-    nomedoproduto: str
+    quantidade:     int
+    nomedoproduto:  str
     preco_unitario: float
-    variacao_id:   Optional[int] = None
-    observacoes:   Optional[str] = None
+    variacao_id:    Optional[int] = None
+    observacoes:    Optional[str] = None
 
     @field_validator("quantidade")
     @classmethod
@@ -251,28 +253,57 @@ class ResponseItemPedidoSchema(BaseModel):
 
 
 # ==========================
-# PEDIDO
+# PEDIDO  —  CRIAÇÃO PÚBLICA (sem login)
+#
+# Campos obrigatórios:
+#   nome_cliente, telefone, tipo_pedido
+#
+# Campos condicionais:
+#   endereco e bairro_id → obrigatórios se tipo_pedido == ENTREGA
 # ==========================
-FORMAS_PAGAMENTO_VALIDAS = {"DINHEIRO", "PIX", "CARTAO"}
-TIPOS_PEDIDO_VALIDOS = {"ENTREGA", "BALCAO"}
-
-
 class PedidoSchema(BaseModel):
-    id_usuario:     int
-    tipo_pedido:    str                     # ENTREGA | BALCAO
-    nome_cliente:   str
-    telefone:       Optional[str] = None
-    endereco:       Optional[str] = None
-    bairro_id:      Optional[int] = None    # Se ENTREGA
-    observacoes:    Optional[str] = None
+    nome_cliente: str
+    telefone:     str
+    endereco:     Optional[str] = None
+    bairro_id:    Optional[int] = None
+    tipo_pedido:  str
+    observacoes:  Optional[str] = None
+
+    # usuario_id agora é OPCIONAL — pode ser preenchido pelo painel admin
+    id_usuario: Optional[int] = None
+
+    @field_validator("nome_cliente")
+    @classmethod
+    def nome_nao_vazio(cls, v):
+        if not v or not v.strip():
+            raise ValueError("Nome do cliente é obrigatório")
+        return v.strip()
+
+    @field_validator("telefone")
+    @classmethod
+    def telefone_nao_vazio(cls, v):
+        if not v or not v.strip():
+            raise ValueError("Telefone é obrigatório")
+        digits = "".join(c for c in v if c.isdigit())
+        if len(digits) < 8:
+            raise ValueError("Telefone inválido — informe pelo menos 8 dígitos")
+        return v.strip()
 
     @field_validator("tipo_pedido")
     @classmethod
     def tipo_valido(cls, v):
         v = v.upper()
-        if v not in TIPOS_PEDIDO_VALIDOS:
-            raise ValueError(f"Tipo deve ser: {', '.join(TIPOS_PEDIDO_VALIDOS)}")
+        validos = {t.value for t in TipoPedido}
+        if v not in validos:
+            raise ValueError(f"tipo_pedido deve ser: {', '.join(validos)}")
         return v
+
+    @model_validator(mode="after")
+    def endereco_obrigatorio_para_entrega(self):
+        if self.tipo_pedido == TipoPedido.ENTREGA.value:
+            if not self.endereco or not self.endereco.strip():
+                raise ValueError("endereco é obrigatório para pedidos do tipo ENTREGA")
+        return self
 
     class Config:
         from_attributes = True
@@ -286,35 +317,36 @@ class FinalizarPedidoSchema(BaseModel):
     @classmethod
     def forma_valida(cls, v):
         v = v.upper().strip()
-        if v not in FORMAS_PAGAMENTO_VALIDAS:
-            raise ValueError(f"Forma de pagamento inválida. Use: {', '.join(FORMAS_PAGAMENTO_VALIDAS)}")
+        validas = {f.value for f in FormaPagamento}
+        if v not in validas:
+            raise ValueError(f"Forma de pagamento inválida. Use: {', '.join(validas)}")
         return v
 
 
 class ResponsePedidoSchema(BaseModel):
     id:              int
+    codigo:          Optional[str]
     status:          str
     tipo_pedido:     str
     nome_cliente:    str
-    telefone:        Optional[str]
+    telefone:        str
     endereco:        Optional[str]
     preco_total:     float
     valor_entrega:   float
     forma_pagamento: Optional[str]
     troco_para:      Optional[float]
     observacoes:     Optional[str]
-    
-    # Controle de impressão
-    impresso_cozinha: bool
-    impresso_motoboy: bool
+
+    impresso_cozinha:       bool
+    impresso_motoboy:       bool
     data_impressao_cozinha: Optional[datetime]
     data_impressao_motoboy: Optional[datetime]
-    
-    criado_em:       datetime
-    atualizado_em:   datetime
-    usuario_id:      int
-    bairro_id:       Optional[int]
-    itens:           List[ResponseItemPedidoSchema] = []
+
+    criado_em:     datetime
+    atualizado_em: datetime
+    usuario_id:    Optional[int]
+    bairro_id:     Optional[int]
+    itens:         List[ResponseItemPedidoSchema] = []
 
     class Config:
         from_attributes = True
@@ -331,13 +363,13 @@ class ResponsePedidoDetalhadoSchema(ResponsePedidoSchema):
 # CONFIGURAÇÃO DA LOJA
 # ==========================
 class ConfiguracaoLojaSchema(BaseModel):
-    nome_loja:             Optional[str]   = None
-    loja_aberta:           Optional[bool]  = None
-    endereco_loja:         Optional[str]   = None
-    telefone:              Optional[str]   = None
-    horario_funcionamento: Optional[str]   = None
-    logo_url:              Optional[str]   = None
-    instagram:             Optional[str]   = None
+    nome_loja:             Optional[str]  = None
+    loja_aberta:           Optional[bool] = None
+    endereco_loja:         Optional[str]  = None
+    telefone:              Optional[str]  = None
+    horario_funcionamento: Optional[str]  = None
+    logo_url:              Optional[str]  = None
+    instagram:             Optional[str]  = None
 
 
 class ResponseConfiguracaoLojaSchema(BaseModel):
@@ -382,8 +414,8 @@ class ResumoFormasPagamentoSchema(BaseModel):
 
 
 class ResponseVendasSchema(BaseModel):
-    periodo:          str
-    total_pedidos:    int
-    receita_total:    float
-    ticket_medio:     float
-    por_pagamento:    ResumoFormasPagamentoSchema
+    periodo:       str
+    total_pedidos: int
+    receita_total: float
+    ticket_medio:  float
+    por_pagamento: ResumoFormasPagamentoSchema
