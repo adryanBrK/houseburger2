@@ -13,10 +13,17 @@ def _config(session: Session) -> ConfiguracaoLoja:
     try:
         c = session.query(ConfiguracaoLoja).filter(ConfiguracaoLoja.id == 1).first()
         if not c:
-            c = ConfiguracaoLoja(id=1)
+            # Passar os valores explicitamente — não depender dos defaults do SQLAlchemy
+            # em memória, pois eles só são garantidos no banco após o flush/refresh.
+            c = ConfiguracaoLoja(
+                id        = 1,
+                nome_loja = "Minha Hamburgueria",
+                loja_aberta = True,
+            )
             session.add(c)
             session.commit()
             session.refresh(c)
+            print("✅ ConfiguracaoLoja criada com valores padrão")
         return c
     except Exception as e:
         print("ERRO AO BUSCAR CONFIG:", e)
