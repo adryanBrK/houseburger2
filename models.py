@@ -1,42 +1,67 @@
+"""
+models.py — VERSÃO CORRIGIDA
+=============================
+Correções:
+  1. Carrega .env com python-dotenv antes de ler DATABASE_URL
+  2. Remove fallback para SQLite (causa de dados sumindo)
+  3. Ajusta driver para postgresql+psycopg2
+  4. Remove connect_args exclusivo de SQLite do engine PostgreSQL
+"""
+
 import os
 import enum
 import bcrypt
+from pathlib import Path
 from datetime import datetime, timezone
 
 from sqlalchemy import (
     create_engine, Column, String, Integer, Boolean,
-    Float, ForeignKey, DateTime, Text, Enum as SAEnum
+    Float, ForeignKey, DateTime, Text, Enum as SAEnum,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
+# ── Carregar .env se existir (útil em desenvolvimento local)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
+
+
 # ==========================
 # BANCO DE DADOS
-# Em produção, DATABASE_URL DEVE estar configurada.
-# SQLite é aceito apenas em desenvolvimento.
 # ==========================
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
-    env = os.getenv("ENVIRONMENT", "development").lower()
-    if env == "production":
-        raise RuntimeError(
-            "❌  DATABASE_URL não definida. "
-            "Configure a variável de ambiente antes de iniciar em produção."
-        )
-    # Desenvolvimento local: SQLite como fallback
-    DATABASE_URL = "sqlite:///./banco.db"
-    print("⚠️  DATABASE_URL não definida — usando SQLite local (apenas desenvolvimento).")
+    raise RuntimeError(
+        "\n\n❌  DATABASE_URL não definida!\n"
+        "    Configure a variável de ambiente antes de iniciar.\n"
+        "    Exemplo no .env:\n"
+        "    DATABASE_URL=postgresql+psycopg2://user:pass@host/db?sslmode=require\n"
+    )
 
-# Ajuste de driver para Heroku/Render/Vercel
+# Compatibilidade com URLs legadas
 if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
+
+if DATABASE_URL.startswith("postgresql://") and "+psycopg2" not in DATABASE_URL:
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
+
+# NUNCA use SQLite em produção — se chegar até aqui sem PostgreSQL, falha explicitamente
+if "sqlite" in DATABASE_URL:
+    raise RuntimeError(
+        "❌  SQLite não é suportado. Configure DATABASE_URL com PostgreSQL."
+    )
 
 db = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {},
-    pool_pre_ping=True,
+    pool_pre_ping=True,   # verifica a conexão antes de usar (evita conexões mortas)
+    pool_size=5,
+    max_overflow=10,
     echo=False,
 )
+
 Base = declarative_base()
 
 
@@ -51,8 +76,8 @@ class StatusPedido(str, enum.Enum):
 
 class TipoPedido(str, enum.Enum):
     ENTREGA  = "ENTREGA"
-    RETIRADA = "RETIRADA"   # era BALCAO — renomeado para RETIRADA (mais claro)
-    BALCAO   = "BALCAO"     # mantido para retrocompatibilidade
+    RETIRADA = "RETIRADA"
+    BALCAO   = "BALCAO"   # mantido para retrocompatibilidade
 
 
 class FormaPagamento(str, enum.Enum):
@@ -127,7 +152,7 @@ class VariacaoProduto(Base):
 
 
 # ==========================
-# BAIRROS E TAXA DE ENTREGA
+# BAIRROS
 # ==========================
 class Bairro(Base):
     __tablename__ = "bairros"
@@ -136,7 +161,7 @@ class Bairro(Base):
     nome          = Column(String, nullable=False, unique=True)
     valor_entrega = Column(Float, nullable=False, default=0.0)
     ativo         = Column(Boolean, default=True)
-    criado_em     = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    criado_em     = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     pedidos = relationship("Pedido", back_populates="bairro")
 
@@ -149,14 +174,14 @@ class Impressora(Base):
 
     id          = Column(Integer, primary_key=True, autoincrement=True)
     nome        = Column(String, nullable=False)
-    tipo        = Column(String, nullable=False)        # USB | REDE
-    finalidade  = Column(String, nullable=False)        # COZINHA | MOTOBOY
+    tipo        = Column(String, nullable=False)
+    finalidade  = Column(String, nullable=False)
     ip_address  = Column(String, nullable=True)
     porta       = Column(Integer, nullable=True)
     usb_vendor  = Column(String, nullable=True)
     usb_product = Column(String, nullable=True)
     ativo       = Column(Boolean, default=True)
-    criado_em   = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    criado_em   = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     logs = relationship("LogImpressao", back_populates="impressora", cascade="all, delete-orphan")
 
@@ -178,8 +203,7 @@ class ConfiguracaoLoja(Base):
 
 
 # ==========================
-# USUÁRIOS  (apenas para operadores/admin do painel)
-# Clientes fazem pedidos sem conta.
+# USUÁRIOS
 # ==========================
 class Usuario(Base):
     __tablename__ = "usuarios"
@@ -208,63 +232,51 @@ class Usuario(Base):
 
 # ==========================
 # PEDIDOS
-# ─ usuario_id é OPCIONAL: pedidos de clientes não têm conta.
-# ─ codigo: número de 4 dígitos legível (ex: #1023) gerado na rota.
 # ==========================
 class Pedido(Base):
     __tablename__ = "pedidos"
 
     id     = Column(Integer, primary_key=True, autoincrement=True)
-    codigo = Column(String, nullable=True, index=True)   # ex: "1023"
+    codigo = Column(String, nullable=True, index=True)
 
-    # Status (enum como string para compatibilidade com SQLite e Postgres)
     status = Column(
         SAEnum(StatusPedido, values_callable=lambda e: [i.value for i in e]),
         default=StatusPedido.PENDENTE,
         nullable=False,
     )
 
-    # Tipo de pedido
     tipo_pedido = Column(
         SAEnum(TipoPedido, values_callable=lambda e: [i.value for i in e]),
         nullable=False,
     )
 
-    # Dados do cliente (preenchidos pelo próprio cliente — sem login)
     nome_cliente = Column(String, nullable=False)
-    telefone     = Column(String, nullable=False)   # obrigatório
-    endereco     = Column(String, nullable=True)    # obrigatório apenas se ENTREGA
+    telefone     = Column(String, nullable=False)
+    endereco     = Column(String, nullable=True)
 
-    # Valores
     preco_total   = Column(Float, default=0.0)
     valor_entrega = Column(Float, default=0.0)
 
-    # Pagamento
     forma_pagamento = Column(
         SAEnum(FormaPagamento, values_callable=lambda e: [i.value for i in e]),
         nullable=True,
     )
     troco_para = Column(Float, nullable=True)
 
-    # Controle de impressão
-    impresso_cozinha        = Column(Boolean, default=False)
-    impresso_motoboy        = Column(Boolean, default=False)
-    data_impressao_cozinha  = Column(DateTime, nullable=True)
-    data_impressao_motoboy  = Column(DateTime, nullable=True)
+    impresso_cozinha       = Column(Boolean, default=False)
+    impresso_motoboy       = Column(Boolean, default=False)
+    data_impressao_cozinha = Column(DateTime(timezone=True), nullable=True)
+    data_impressao_motoboy = Column(DateTime(timezone=True), nullable=True)
 
-    # Observações gerais
     observacoes = Column(Text, nullable=True)
 
-    # Timestamps
-    criado_em     = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    criado_em     = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     atualizado_em = Column(
-        DateTime,
+        DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
 
-    # Relacionamentos
-    # usuario_id é NULL para pedidos de clientes; preenchido quando um operador registra.
     usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True)
     bairro_id  = Column(Integer, ForeignKey("bairros.id"), nullable=True)
 
@@ -302,9 +314,9 @@ class LogImpressao(Base):
     sucesso      = Column(Boolean, default=False)
     erro         = Column(Text, nullable=True)
     tentativas   = Column(Integer, default=1)
-    criado_em    = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    criado_em    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    pedido_id    = Column(Integer, ForeignKey("pedidos.id"), nullable=False)
+    pedido_id     = Column(Integer, ForeignKey("pedidos.id"), nullable=False)
     impressora_id = Column(Integer, ForeignKey("impressoras.id"), nullable=True)
 
     pedido     = relationship("Pedido", back_populates="logs_impressao")
