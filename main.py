@@ -46,7 +46,24 @@ def _inicializar():
     logger.info("Tabelas verificadas/criadas com sucesso")
 
     session = sessionmaker(bind=db)()
-    
+    try:
+        admin_email = "admin@hamburgueria.com"
+        if not session.query(Usuario).filter(Usuario.email == admin_email).first():
+            session.add(Usuario(
+                nome  = "Administrador",
+                email = admin_email,
+                senha = "admin123",
+                admin = True,
+                ativo = True,
+            ))
+            session.commit()
+            logger.info("Admin criado  →  %s  /  admin123", admin_email)
+        else:
+            logger.info("Admin já existe — nenhuma ação necessária")
+    finally:
+        session.close()
+
+
 # ══════════════════════════════════════════════════════════════════
 # LIFESPAN
 # ══════════════════════════════════════════════════════════════════
