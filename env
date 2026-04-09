@@ -1,0 +1,18 @@
+# ============================================================
+# VARIÁVEIS DE AMBIENTE — Hamburgueria API
+# Copie este arquivo para a raiz do projeto (mesma pasta de main.py)
+# NUNCA commite este arquivo no git (.gitignore deve ter .env)
+# ============================================================
+
+# ----- BANCO DE DADOS (Neon PostgreSQL) -----
+# Pegue esta URL no painel do Neon: Project > Connection Details
+# Formato: postgresql+psycopg2://usuario:senha@host/banco?sslmode=require
+DATABASE_URL=postgresql+psycopg2://usuario:senha@ep-xxxx.us-east-2.aws.neon.tech/neondb?sslmode=require
+
+# ----- JWT -----
+SECRET_KEY=troque-esta-chave-por-algo-aleatorio-em-producao
+ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=60
+
+# ----- AMBIENTE -----
+ENVIRONMENT=production
