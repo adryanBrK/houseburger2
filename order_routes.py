@@ -21,23 +21,11 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(name)s | %(mes
 order_router = APIRouter(prefix="/Pedidos", tags=["Pedidos"])
 
 
-# ────────────────────────────────────────────────────────────────────
-# HELPER: gerar código legível de pedido
-# Formato: "1001", "1002", … baseado no ID após o INSERT.
-# ────────────────────────────────────────────────────────────────────
 def _gerar_codigo(pedido_id: int) -> str:
-    """Retorna um código de 4 dígitos com base no ID (ex: #1023)."""
     return str(1000 + pedido_id)
 
 
-# ────────────────────────────────────────────────────────────────────
-# HELPER: verificar persistência real no banco
-# ────────────────────────────────────────────────────────────────────
 def _verificar_persistencia(pedido_id: int, session: Session) -> Pedido:
-    """
-    Após commit, faz uma query independente para confirmar que o pedido
-    realmente foi salvo. Lança HTTP 500 se não encontrar.
-    """
     pedido_salvo = session.query(Pedido).filter(Pedido.id == pedido_id).first()
     if not pedido_salvo:
         logger.error("FALHA DE PERSISTÊNCIA — pedido %s não encontrado após commit", pedido_id)
@@ -200,31 +188,12 @@ async def criar_pedido(
     dados:   PedidoSchema,
     session: Session = Depends(pegar_sessao),
 ):
-    """
-    ## Criação de pedido — endpoint público
-
-    O cliente NÃO precisa de conta para fazer um pedido.
-
-    **Campos obrigatórios:**
-    - `nome_cliente` — nome do cliente
-    - `telefone`     — telefone para contato
-    - `tipo_pedido`  — `ENTREGA` ou `RETIRADA`
-
-    **Condicional:**
-    - `endereco` e `bairro_id` — obrigatórios se `tipo_pedido == ENTREGA`
-    """
     logger.info(
         "Novo pedido recebido | cliente: %s | tipo: %s",
         dados.nome_cliente,
         dados.tipo_pedido,
     )
 
-    # ── 1. Verificar se a loja está aberta (opcional — comente se quiser ignorar)
-    # config = session.query(ConfiguracaoLoja).filter(ConfiguracaoLoja.id == 1).first()
-    # if config and not config.loja_aberta:
-    #     raise HTTPException(status_code=400, detail="A loja está fechada no momento")
-
-    # ── 2. Calcular valor de entrega a partir do bairro
     valor_entrega = 0.0
     if dados.bairro_id:
         bairro = session.query(Bairro).filter(
@@ -238,7 +207,6 @@ async def criar_pedido(
         valor_entrega = bairro.valor_entrega
         logger.info("Bairro: %s | taxa de entrega: R$ %.2f", bairro.nome, valor_entrega)
 
-    # ── 3. Criar o pedido (status PENDENTE, código gerado após INSERT)
     pedido = Pedido(
         nome_cliente  = dados.nome_cliente.strip(),
         telefone      = dados.telefone.strip(),
@@ -248,20 +216,15 @@ async def criar_pedido(
         valor_entrega = valor_entrega,
         observacoes   = dados.observacoes,
         status        = StatusPedido.PENDENTE,
-        # usuario_id é opcional — preenchido somente pelo painel admin
         usuario_id    = dados.id_usuario,
     )
 
     try:
         session.add(pedido)
-        session.flush()   # gera o ID sem fechar a transação
-
-        # ── 4. Gerar código legível (ex: "1023") usando o ID já disponível
+        session.flush()
         pedido.codigo = _gerar_codigo(pedido.id)
-
         session.commit()
         logger.info("Commit realizado | id=%s | codigo=%s", pedido.id, pedido.codigo)
-
     except Exception as exc:
         session.rollback()
         logger.error("Erro ao criar pedido: %s", exc, exc_info=True)
@@ -270,10 +233,7 @@ async def criar_pedido(
             detail=f"Erro interno ao salvar pedido: {str(exc)}",
         )
 
-    # ── 5. Verificação de persistência real
-    pedido_confirmado = _verificar_persistencia(pedido.id, session)
-
-    return pedido_confirmado
+    return _verificar_persistencia(pedido.id, session)
 
 
 # ============================================================
@@ -346,7 +306,6 @@ async def buscar_pedido_por_codigo(
     codigo:  str,
     session: Session = Depends(pegar_sessao),
 ):
-    """Permite que o cliente consulte o status do próprio pedido pelo código."""
     pedido = session.query(Pedido).filter(Pedido.codigo == codigo).first()
     if not pedido:
         raise HTTPException(status_code=404, detail=f"Pedido #{codigo} não encontrado")
@@ -354,26 +313,29 @@ async def buscar_pedido_por_codigo(
 
 
 # ============================================================
-# ITENS DO PEDIDO
+# ITENS DO PEDIDO — PÚBLICO (cliente não tem login)
 # ============================================================
 
 @order_router.post(
     "/pedido/adicionar-item/{pedido_id}",
-    summary="Adiciona item ao pedido (dono ou admin)",
+    summary="Adiciona item ao pedido (público — sem login)",
 )
 async def adicionar_item(
     pedido_id: int,
     dados:     ItemPedidoSchema,
     session:   Session = Depends(pegar_sessao),
-    usuario:   Usuario = Depends(verificar_token),
+    # ✅ Removido: verificar_token — cliente não tem login
 ):
     pedido = session.query(Pedido).filter(Pedido.id == pedido_id).first()
     if not pedido:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
-    if not usuario.admin and usuario.id != pedido.usuario_id:
-        raise HTTPException(status_code=403, detail="Acesso negado")
+
+    # Segurança: só permite alterar pedido que ainda está PENDENTE
     if pedido.status != StatusPedido.PENDENTE:
-        raise HTTPException(status_code=400, detail=f"Pedido já está {pedido.status}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Pedido já está {pedido.status} — não é possível adicionar itens",
+        )
 
     variacao_nome  = None
     preco_unitario = dados.preco_unitario
@@ -393,22 +355,23 @@ async def adicionar_item(
         preco_unitario = dados.preco_unitario + variacao.acrescimo
 
     item = ItemPedido(
-        quantidade    = dados.quantidade,
-        nomedoproduto = dados.nomedoproduto,
-        variacao_nome = variacao_nome,
-        preco_unitario= preco_unitario,
-        observacoes   = dados.observacoes,
-        pedido_id     = pedido_id,
+        quantidade     = dados.quantidade,
+        nomedoproduto  = dados.nomedoproduto,
+        variacao_nome  = variacao_nome,
+        preco_unitario = preco_unitario,
+        observacoes    = dados.observacoes,   # adicionais ficam aqui como texto
+        pedido_id      = pedido_id,
     )
     session.add(item)
     session.flush()
 
-    # Recalcular total (itens + entrega)
-    subtotal_itens  = sum(i.preco_unitario * i.quantidade for i in pedido.itens)
+    # Recalcular total (itens + taxa de entrega)
+    subtotal_itens     = sum(i.preco_unitario * i.quantidade for i in pedido.itens)
     pedido.preco_total = subtotal_itens + pedido.valor_entrega
 
     session.commit()
     session.refresh(item)
+
     logger.info(
         "Item adicionado | pedido=%s | produto=%s | qty=%s | preço=%.2f",
         pedido_id, dados.nomedoproduto, dados.quantidade, preco_unitario,
@@ -425,7 +388,7 @@ async def adicionar_item(
 
 @order_router.delete(
     "/pedido/remover-item/{item_id}",
-    summary="Remove um item do pedido",
+    summary="Remove um item do pedido (admin)",
 )
 async def remover_item(
     item_id: int,
@@ -445,7 +408,7 @@ async def remover_item(
     session.delete(item)
     session.flush()
 
-    subtotal_itens = sum(i.preco_unitario * i.quantidade for i in pedido.itens)
+    subtotal_itens     = sum(i.preco_unitario * i.quantidade for i in pedido.itens)
     pedido.preco_total = subtotal_itens + pedido.valor_entrega
     session.commit()
 
@@ -457,31 +420,42 @@ async def remover_item(
 
 
 # ============================================================
-# FINALIZAR / CANCELAR  (somente admin)
+# FINALIZAR — PÚBLICO (cliente não tem login)
 # ============================================================
 
 @order_router.post(
     "/pedido/finalizar/{pedido_id}",
     response_model=ResponsePedidoSchema,
-    summary="Finaliza o pedido — DINHEIRO | PIX | CARTAO (somente admin)",
+    summary="Finaliza o pedido — DINHEIRO | PIX | CARTAO (público — sem login)",
 )
 async def finalizar_pedido(
     pedido_id: int,
     dados:     FinalizarPedidoSchema,
     session:   Session = Depends(pegar_sessao),
-    _:         Usuario = Depends(verificar_admin),
+    # ✅ Removido: verificar_admin — cliente não tem login
 ):
     pedido = session.query(Pedido).filter(Pedido.id == pedido_id).first()
     if not pedido:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
+
+    # Segurança: só finaliza pedido PENDENTE
     if pedido.status != StatusPedido.PENDENTE:
-        raise HTTPException(status_code=400, detail=f"Pedido já está {pedido.status}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Pedido já está {pedido.status} — não é possível finalizar novamente",
+        )
+
+    # Segurança: não finaliza pedido sem itens
     if not pedido.itens:
-        raise HTTPException(status_code=400, detail="Não é possível finalizar pedido sem itens")
+        raise HTTPException(
+            status_code=400,
+            detail="Não é possível finalizar um pedido sem itens",
+        )
 
     pedido.status          = StatusPedido.FINALIZADO
     pedido.forma_pagamento = dados.forma_pagamento
     pedido.troco_para      = dados.troco_para
+
     session.commit()
     session.refresh(pedido)
 
@@ -491,6 +465,10 @@ async def finalizar_pedido(
     )
     return pedido
 
+
+# ============================================================
+# CANCELAR — ADMIN
+# ============================================================
 
 @order_router.post(
     "/pedido/cancelar/{pedido_id}",
@@ -519,7 +497,7 @@ async def cancelar_pedido(
 
 
 # ============================================================
-# DEBUG — verificar persistência no banco  (somente admin)
+# DEBUG — somente admin
 # ============================================================
 
 @order_router.get(
@@ -531,11 +509,7 @@ async def debug_pedidos(
     session: Session = Depends(pegar_sessao),
     _:       Usuario = Depends(verificar_admin),
 ):
-    """
-    Endpoint de diagnóstico. Use para confirmar que os pedidos estão
-    sendo salvos no PostgreSQL após reloads ou redeploys.
-    """
-    total = session.query(Pedido).count()
+    total   = session.query(Pedido).count()
     ultimos = (
         session.query(Pedido)
         .order_by(Pedido.criado_em.desc())
@@ -544,7 +518,7 @@ async def debug_pedidos(
     )
 
     return {
-        "banco":        "PostgreSQL" if "postgresql" in str(session.bind.url) else "SQLite",
+        "banco":         "PostgreSQL" if "postgresql" in str(session.bind.url) else "SQLite",
         "total_pedidos": total,
         "ultimos_5": [
             {
