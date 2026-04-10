@@ -8,6 +8,8 @@ from sqlalchemy.orm import sessionmaker
 
 from models import Base, db, Usuario
 
+from impressora_routes import impressora_router, _impressora_router
+
 # ── Routers
 from auth_routes       import auth_router
 from product_routes    import product_router
@@ -115,6 +117,8 @@ app.include_router(store_router)
 app.include_router(bairro_router)
 app.include_router(impressora_router)
 app.include_router(extras_router)
+app.include_router(impressora_router)
+app.include_router(_impressora_router)
 
 
 # ══════════════════════════════════════════════════════════════════
