@@ -12,23 +12,37 @@ store_router = APIRouter(prefix="/Loja", tags=["Configurações da Loja"])
 def _config(session: Session) -> ConfiguracaoLoja:
     try:
         c = session.query(ConfiguracaoLoja).filter(ConfiguracaoLoja.id == 1).first()
+
         if not c:
-            # Passar os valores explicitamente — não depender dos defaults do SQLAlchemy
-            # em memória, pois eles só são garantidos no banco após o flush/refresh.
+            print("⚠️ Config não encontrada, criando...")
+
             c = ConfiguracaoLoja(
-                id        = 1,
-                nome_loja = "Minha Hamburgueria",
-                loja_aberta = True,
+                id=1,
+                nome_loja="Minha Hamburgueria",
+                loja_aberta=True,
             )
+
             session.add(c)
-            session.commit()
+
+            try:
+                session.commit()
+            except Exception as e:
+                session.rollback()
+                print("🔥 ERRO AO COMMITAR CONFIG:", e)
+                raise
+
             session.refresh(c)
-            print("✅ ConfiguracaoLoja criada com valores padrão")
+
         return c
+
     except Exception as e:
-        print("ERRO AO BUSCAR CONFIG:", e)
+        print("🔥 ERRO GRAVE EM _config:", e)
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Erro ao carregar configuração da loja")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Erro ao carregar configuração da loja"
+        )
 
 
 @store_router.get("/", response_model=ResponseConfiguracaoLojaSchema)
