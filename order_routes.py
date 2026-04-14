@@ -215,7 +215,8 @@ async def criar_pedido(
         bairro_id     = dados.bairro_id,
         valor_entrega = valor_entrega,
         observacoes   = dados.observacoes,
-        status        = StatusPedido.PENDENTE,
+
+        status        = StatusPedido.PENDENTE,  # 🔥 FORÇADO
         usuario_id    = dados.id_usuario,
     )
 
