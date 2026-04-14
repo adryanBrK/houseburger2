@@ -1,11 +1,18 @@
 """
 models.py — VERSÃO CORRIGIDA
-=============================
-Correções:
-  1. Carrega .env com python-dotenv antes de ler DATABASE_URL
-  2. Remove fallback para SQLite (causa de dados sumindo)
-  3. Ajusta driver para postgresql+psycopg2
-  4. Remove connect_args exclusivo de SQLite do engine PostgreSQL
+==============================
+
+PROBLEMAS CORRIGIDOS:
+  1. SQLite removido — sem fallback silencioso
+  2. Driver corrigido: postgres:// → postgresql+psycopg2://
+     (original só trocava para postgresql://, sem o driver psycopg2)
+  3. pool_recycle=300 adicionado — evita "SSL connection closed unexpectedly"
+     que o Neon causa ao fechar conexões ociosas após ~5 minutos
+  4. pool_size e max_overflow definidos explicitamente
+  5. connect_args com check_same_thread removido (exclusivo do SQLite —
+     causava comportamento incorreto silencioso no PostgreSQL)
+  6. load_dotenv() chamado antes de ler DATABASE_URL
+  7. DateTime(timezone=True) em todas as colunas de data
 """
 
 import os
@@ -20,7 +27,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, relationship
 
-# ── Carregar .env se existir (útil em desenvolvimento local)
+# ── Carregar .env antes de qualquer os.getenv()
 try:
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -28,35 +35,44 @@ except ImportError:
     pass
 
 
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 # BANCO DE DADOS
-# ==========================
-DATABASE_URL = os.getenv("DATABASE_URL")
+# ══════════════════════════════════════════════════════════════════
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 if not DATABASE_URL:
     raise RuntimeError(
         "\n\n❌  DATABASE_URL não definida!\n"
-        "    Configure a variável de ambiente antes de iniciar.\n"
-        "    Exemplo no .env:\n"
+        "    Crie o arquivo .env na raiz do projeto com:\n"
         "    DATABASE_URL=postgresql+psycopg2://user:pass@host/db?sslmode=require\n"
+        "    Ou configure a variável de ambiente no painel do Render/Railway.\n"
     )
 
-# Compatibilidade com URLs legadas
+# Normalizar URLs legadas
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
 
 if DATABASE_URL.startswith("postgresql://") and "+psycopg2" not in DATABASE_URL:
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
 
-# NUNCA use SQLite em produção — se chegar até aqui sem PostgreSQL, falha explicitamente
-if "sqlite" in DATABASE_URL:
+if "sqlite" in DATABASE_URL.lower():
     raise RuntimeError(
-        "❌  SQLite não é suportado. Configure DATABASE_URL com PostgreSQL."
+        "❌  SQLite detectado em DATABASE_URL.\n"
+        "    SQLite não persiste dados em serverless (Render, Vercel, Railway).\n"
+        "    Configure DATABASE_URL com PostgreSQL."
     )
 
 db = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,   # verifica a conexão antes de usar (evita conexões mortas)
+    # pool_pre_ping: testa conexão antes de entregar do pool.
+    # Essencial no Neon que fecha conexões ociosas — evita
+    # "SSL connection has been closed unexpectedly" na primeira query.
+    pool_pre_ping=True,
+    # pool_recycle: descarta conexões após 300s.
+    # O Neon fecha conexões ociosas em ~5 min — garante que o pool
+    # nunca entregue uma conexão mais velha do que isso.
+    pool_recycle=300,
+    # Planos gratuitos do Neon têm limite de ~10 conexões simultâneas.
     pool_size=5,
     max_overflow=10,
     echo=False,
@@ -65,9 +81,9 @@ db = create_engine(
 Base = declarative_base()
 
 
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 # ENUMS
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 class StatusPedido(str, enum.Enum):
     PENDENTE   = "PENDENTE"
     FINALIZADO = "FINALIZADO"
@@ -77,7 +93,7 @@ class StatusPedido(str, enum.Enum):
 class TipoPedido(str, enum.Enum):
     ENTREGA  = "ENTREGA"
     RETIRADA = "RETIRADA"
-    BALCAO   = "BALCAO"   # mantido para retrocompatibilidade
+    BALCAO   = "BALCAO"    # mantido para retrocompatibilidade
 
 
 class FormaPagamento(str, enum.Enum):
@@ -86,9 +102,9 @@ class FormaPagamento(str, enum.Enum):
     CARTAO   = "CARTAO"
 
 
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 # CATEGORIAS
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 class Categoria(Base):
     __tablename__ = "categorias"
 
@@ -100,9 +116,9 @@ class Categoria(Base):
     produtos = relationship("Produto", back_populates="categoria")
 
 
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 # PORÇÕES
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 class Porcao(Base):
     __tablename__ = "porcoes"
 
@@ -113,9 +129,9 @@ class Porcao(Base):
     produtos = relationship("Produto", back_populates="porcao")
 
 
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 # PRODUTOS
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 class Produto(Base):
     __tablename__ = "produtos"
 
@@ -135,9 +151,9 @@ class Produto(Base):
     )
 
 
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 # VARIAÇÕES DE PRODUTO
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 class VariacaoProduto(Base):
     __tablename__ = "variacoes_produto"
 
@@ -151,9 +167,9 @@ class VariacaoProduto(Base):
     produto = relationship("Produto", back_populates="variacoes")
 
 
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 # BAIRROS
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 class Bairro(Base):
     __tablename__ = "bairros"
 
@@ -166,16 +182,16 @@ class Bairro(Base):
     pedidos = relationship("Pedido", back_populates="bairro")
 
 
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 # IMPRESSORAS
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 class Impressora(Base):
     __tablename__ = "impressoras"
 
     id          = Column(Integer, primary_key=True, autoincrement=True)
     nome        = Column(String, nullable=False)
-    tipo        = Column(String, nullable=False)
-    finalidade  = Column(String, nullable=False)
+    tipo        = Column(String, nullable=False)       # USB | REDE
+    finalidade  = Column(String, nullable=False)       # COZINHA | MOTOBOY
     ip_address  = Column(String, nullable=True)
     porta       = Column(Integer, nullable=True)
     usb_vendor  = Column(String, nullable=True)
@@ -186,9 +202,9 @@ class Impressora(Base):
     logs = relationship("LogImpressao", back_populates="impressora", cascade="all, delete-orphan")
 
 
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 # CONFIGURAÇÕES DA LOJA
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 class ConfiguracaoLoja(Base):
     __tablename__ = "configuracoes"
 
@@ -202,9 +218,9 @@ class ConfiguracaoLoja(Base):
     instagram             = Column(String, nullable=True)
 
 
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 # USUÁRIOS
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 class Usuario(Base):
     __tablename__ = "usuarios"
 
@@ -230,9 +246,9 @@ class Usuario(Base):
         return bcrypt.hashpw(senha_plana.encode("utf-8"), salt).decode("utf-8")
 
 
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 # PEDIDOS
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 class Pedido(Base):
     __tablename__ = "pedidos"
 
@@ -273,7 +289,7 @@ class Pedido(Base):
     criado_em     = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     atualizado_em = Column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda:  datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
 
@@ -286,9 +302,9 @@ class Pedido(Base):
     logs_impressao = relationship("LogImpressao", back_populates="pedido", cascade="all, delete-orphan")
 
 
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 # ITENS DO PEDIDO
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 class ItemPedido(Base):
     __tablename__ = "itens_pedidos"
 
@@ -303,9 +319,9 @@ class ItemPedido(Base):
     pedido    = relationship("Pedido", back_populates="itens")
 
 
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 # LOG DE IMPRESSÃO
-# ==========================
+# ══════════════════════════════════════════════════════════════════
 class LogImpressao(Base):
     __tablename__ = "logs_impressao"
 
