@@ -103,6 +103,37 @@ class ResponseVariacaoSchema(BaseModel):
 
 
 # ==========================
+# ADICIONAIS DE PRODUTO
+# Seguem o mesmo padrão de VariacaoSchema —
+# são opcionais por produto e têm acréscimo no preço.
+# ==========================
+class AdicionalSchema(BaseModel):
+    nome:       str
+    descricao:  Optional[str] = None
+    preco:      float = 0.0
+    disponivel: Optional[bool] = True
+
+    @field_validator("preco")
+    @classmethod
+    def preco_nao_negativo(cls, v):
+        if v < 0:
+            raise ValueError("Preço do adicional não pode ser negativo")
+        return v
+
+
+class ResponseAdicionalSchema(BaseModel):
+    id:         int
+    nome:       str
+    descricao:  Optional[str]
+    preco:      float
+    disponivel: bool
+    produto_id: int
+
+    class Config:
+        from_attributes = True
+
+
+# ==========================
 # PRODUTO
 # ==========================
 class ProdutoSchema(BaseModel):
@@ -132,6 +163,7 @@ class ResponseProdutoSchema(BaseModel):
     categoria_id: int
     porcao_id:    Optional[int]
     variacoes:    List[ResponseVariacaoSchema] = []
+    adicionais:   List[ResponseAdicionalSchema] = []
 
     class Config:
         from_attributes = True
@@ -254,12 +286,6 @@ class ResponseItemPedidoSchema(BaseModel):
 
 # ==========================
 # PEDIDO  —  CRIAÇÃO PÚBLICA (sem login)
-#
-# Campos obrigatórios:
-#   nome_cliente, telefone, tipo_pedido
-#
-# Campos condicionais:
-#   endereco e bairro_id → obrigatórios se tipo_pedido == ENTREGA
 # ==========================
 class PedidoSchema(BaseModel):
     nome_cliente: str
@@ -268,9 +294,7 @@ class PedidoSchema(BaseModel):
     bairro_id:    Optional[int] = None
     tipo_pedido:  str
     observacoes:  Optional[str] = None
-
-    # usuario_id agora é OPCIONAL — pode ser preenchido pelo painel admin
-    id_usuario: Optional[int] = None
+    id_usuario:   Optional[int] = None
 
     @field_validator("nome_cliente")
     @classmethod
