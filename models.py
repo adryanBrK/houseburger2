@@ -1,9 +1,27 @@
 """
-models.py — ADICIONADO: model AdicionalProduto
-Única mudança em relação à versão anterior:
-  - Classe AdicionalProduto adicionada após VariacaoProduto
-  - Relationship "adicionais" adicionado em Produto
-Tudo mais permanece idêntico.
+models.py
+=========
+Mudanças em relação à versão anterior:
+
+1. AdicionalProduto (antes) → REMOVIDO.
+   Era N:1 (adicional pertencia a um produto). Agora é N:N.
+
+2. Adicional — NOVO model global.
+   Não pertence a nenhum produto nem categoria.
+   Pode ser vinculado a quantos produtos quiser.
+
+3. produto_adicional — tabela intermediária N:N.
+   Criada com Table() do SQLAlchemy (padrão para secondary).
+
+4. Produto.adicionais agora usa secondary=produto_adicional.
+   cascade e lazy configurados corretamente para N:N.
+
+5. ItemPedido — dois campos novos:
+   - adicionais_nomes: string serializada dos adicionais escolhidos
+     (ex: "Queijo Extra, Bacon") — salva o snapshot no momento do pedido.
+   - adicionais_preco: soma dos preços dos adicionais no momento do pedido.
+   Estratégia de snapshot: o preço do adicional pode mudar depois;
+   o pedido deve guardar o valor exato cobrado.
 """
 
 import os
@@ -14,7 +32,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     create_engine, Column, String, Integer, Boolean,
-    Float, ForeignKey, DateTime, Text, Enum as SAEnum,
+    Float, ForeignKey, DateTime, Text, Enum as SAEnum, Table,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -51,6 +69,30 @@ db = create_engine(
 )
 
 Base = declarative_base()
+
+
+# ══════════════════════════════════════════════════════════════════
+# TABELA INTERMEDIÁRIA N:N  —  produto ↔ adicional
+# Criada ANTES das classes que a referenciam.
+# Usa Table() simples (sem model próprio) porque não precisa de
+# campos extras na associação — só as duas FKs.
+# ══════════════════════════════════════════════════════════════════
+produto_adicional = Table(
+    "produto_adicional",
+    Base.metadata,
+    Column(
+        "produto_id",
+        Integer,
+        ForeignKey("produtos.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "adicional_id",
+        Integer,
+        ForeignKey("adicionais.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+)
 
 
 # ==========================
@@ -102,6 +144,29 @@ class Porcao(Base):
 
 
 # ==========================
+# ADICIONAIS  (globais — não pertencem a produto nem categoria)
+# ==========================
+class Adicional(Base):
+    __tablename__ = "adicionais"
+
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    nome            = Column(String, nullable=False, unique=True)
+    descricao       = Column(String, nullable=True)
+    preco           = Column(Float, nullable=False, default=0.0)
+    ativo           = Column(Boolean, default=True)
+    # Quantidade máxima que o cliente pode pedir deste adicional por item.
+    # None = sem limite.
+    limite_qtd      = Column(Integer, nullable=True)
+
+    # Produtos que têm este adicional disponível (lado inverso do N:N)
+    produtos = relationship(
+        "Produto",
+        secondary=produto_adicional,
+        back_populates="adicionais",
+    )
+
+
+# ==========================
 # PRODUTOS
 # ==========================
 class Produto(Base):
@@ -116,14 +181,17 @@ class Produto(Base):
     categoria_id = Column(Integer, ForeignKey("categorias.id"), nullable=False)
     porcao_id    = Column(Integer, ForeignKey("porcoes.id"), nullable=True)
 
-    categoria  = relationship("Categoria", back_populates="produtos")
-    porcao     = relationship("Porcao", back_populates="produtos")
-    variacoes  = relationship(
+    categoria = relationship("Categoria", back_populates="produtos")
+    porcao    = relationship("Porcao", back_populates="produtos")
+    variacoes = relationship(
         "VariacaoProduto", back_populates="produto", cascade="all, delete-orphan"
     )
-    # NOVO — adicionais deste produto
+    # N:N com Adicional via tabela intermediária produto_adicional
     adicionais = relationship(
-        "AdicionalProduto", back_populates="produto", cascade="all, delete-orphan"
+        "Adicional",
+        secondary=produto_adicional,
+        back_populates="produtos",
+        lazy="selectin",   # carrega junto com o produto automaticamente
     )
 
 
@@ -141,26 +209,6 @@ class VariacaoProduto(Base):
     produto_id = Column(Integer, ForeignKey("produtos.id"), nullable=False)
 
     produto = relationship("Produto", back_populates="variacoes")
-
-
-# ==========================
-# ADICIONAIS DE PRODUTO  ← NOVO
-# Exemplo: borda recheada, queijo extra, bacon adicional.
-# Diferença de VariacaoProduto: adicionais são opcionais e cumulativos
-# (o cliente pode pedir vários). Variações são mutuamente exclusivas
-# (tamanho P/M/G). Ambos têm acréscimo de preço.
-# ==========================
-class AdicionalProduto(Base):
-    __tablename__ = "adicionais_produto"
-
-    id         = Column(Integer, primary_key=True, autoincrement=True)
-    nome       = Column(String, nullable=False)
-    descricao  = Column(String, nullable=True)
-    preco      = Column(Float, nullable=False, default=0.0)
-    disponivel = Column(Boolean, default=True)
-    produto_id = Column(Integer, ForeignKey("produtos.id"), nullable=False)
-
-    produto = relationship("Produto", back_populates="adicionais")
 
 
 # ==========================
@@ -300,16 +348,24 @@ class Pedido(Base):
 
 # ==========================
 # ITENS DO PEDIDO
+# Campos adicionados:
+#   adicionais_nomes — snapshot dos nomes (ex: "Queijo Extra, Bacon")
+#   adicionais_preco — soma dos preços dos adicionais no momento do pedido
+# Estratégia de snapshot: preços podem mudar; o pedido registra o que
+# foi cobrado. Não usamos FK para Adicional aqui de propósito.
 # ==========================
 class ItemPedido(Base):
     __tablename__ = "itens_pedidos"
 
-    id             = Column(Integer, primary_key=True, autoincrement=True)
-    quantidade     = Column(Integer, nullable=False)
-    nomedoproduto  = Column(String, nullable=False)
-    variacao_nome  = Column(String, nullable=True)
-    preco_unitario = Column(Float, nullable=False)
-    observacoes    = Column(Text, nullable=True)
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    quantidade       = Column(Integer, nullable=False)
+    nomedoproduto    = Column(String, nullable=False)
+    variacao_nome    = Column(String, nullable=True)
+    preco_unitario   = Column(Float, nullable=False)   # preço base + variação
+    # Adicionais escolhidos pelo cliente para este item específico
+    adicionais_nomes = Column(String, nullable=True)   # "Queijo Extra, Bacon"
+    adicionais_preco = Column(Float, nullable=False, default=0.0)
+    observacoes      = Column(Text, nullable=True)
 
     pedido_id = Column(Integer, ForeignKey("pedidos.id"), nullable=False)
     pedido    = relationship("Pedido", back_populates="itens")
