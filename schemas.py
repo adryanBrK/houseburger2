@@ -103,15 +103,14 @@ class ResponseVariacaoSchema(BaseModel):
 
 
 # ==========================
-# ADICIONAIS DE PRODUTO
-# Seguem o mesmo padrão de VariacaoSchema —
-# são opcionais por produto e têm acréscimo no preço.
+# ADICIONAIS  (globais)
 # ==========================
 class AdicionalSchema(BaseModel):
     nome:       str
     descricao:  Optional[str] = None
     preco:      float = 0.0
-    disponivel: Optional[bool] = True
+    ativo:      Optional[bool] = True
+    limite_qtd: Optional[int] = None
 
     @field_validator("preco")
     @classmethod
@@ -120,14 +119,21 @@ class AdicionalSchema(BaseModel):
             raise ValueError("Preço do adicional não pode ser negativo")
         return v
 
+    @field_validator("limite_qtd")
+    @classmethod
+    def limite_positivo(cls, v):
+        if v is not None and v <= 0:
+            raise ValueError("limite_qtd deve ser maior que zero")
+        return v
+
 
 class ResponseAdicionalSchema(BaseModel):
     id:         int
     nome:       str
     descricao:  Optional[str]
     preco:      float
-    disponivel: bool
-    produto_id: int
+    ativo:      bool
+    limite_qtd: Optional[int]
 
     class Config:
         from_attributes = True
@@ -162,7 +168,7 @@ class ResponseProdutoSchema(BaseModel):
     disponivel:   bool
     categoria_id: int
     porcao_id:    Optional[int]
-    variacoes:    List[ResponseVariacaoSchema] = []
+    variacoes:    List[ResponseVariacaoSchema]  = []
     adicionais:   List[ResponseAdicionalSchema] = []
 
     class Config:
@@ -252,13 +258,16 @@ class ResponseImpressoraSchema(BaseModel):
 
 # ==========================
 # ITENS DO PEDIDO
+# Novo campo: adicionais_ids — lista de IDs dos adicionais escolhidos.
+# O backend resolve nomes e preços; o frontend só manda os IDs.
 # ==========================
 class ItemPedidoSchema(BaseModel):
     quantidade:     int
     nomedoproduto:  str
     preco_unitario: float
-    variacao_id:    Optional[int] = None
-    observacoes:    Optional[str] = None
+    variacao_id:    Optional[int]       = None
+    adicionais_ids: Optional[List[int]] = None   # ← NOVO
+    observacoes:    Optional[str]       = None
 
     @field_validator("quantidade")
     @classmethod
@@ -272,13 +281,15 @@ class ItemPedidoSchema(BaseModel):
 
 
 class ResponseItemPedidoSchema(BaseModel):
-    id:             int
-    quantidade:     int
-    nomedoproduto:  str
-    variacao_nome:  Optional[str]
-    preco_unitario: float
-    observacoes:    Optional[str]
-    subtotal:       float = 0.0
+    id:               int
+    quantidade:       int
+    nomedoproduto:    str
+    variacao_nome:    Optional[str]
+    preco_unitario:   float
+    adicionais_nomes: Optional[str]   # "Queijo Extra, Bacon"
+    adicionais_preco: float
+    observacoes:      Optional[str]
+    subtotal:         float = 0.0
 
     class Config:
         from_attributes = True
