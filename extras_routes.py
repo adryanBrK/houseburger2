@@ -3,7 +3,6 @@ from sqlalchemy.orm import Session
 from sqlalchemy import Column, String, Integer, Float, Boolean
 from typing import List, Optional
 from pydantic import BaseModel
-
 from dependencias import pegar_sessao, verificar_admin
 from models import Base, db, Usuario
 
@@ -11,11 +10,12 @@ extras_router = APIRouter(prefix="/Extras", tags=["Extras"])
 
 
 # ==========================
-# MODEL - EXTRA
+# MODEL
 # ==========================
+
 class Extra(Base):
     __tablename__ = "extras"
-    
+
     id    = Column(Integer, primary_key=True, autoincrement=True)
     nome  = Column(String, nullable=False, unique=True)
     preco = Column(Float, nullable=False)
@@ -25,6 +25,7 @@ class Extra(Base):
 # ==========================
 # SCHEMAS
 # ==========================
+
 class ExtraSchema(BaseModel):
     nome:  str
     preco: float
@@ -44,12 +45,12 @@ class ResponseExtraSchema(BaseModel):
 # ==========================
 # ROTAS
 # ==========================
-@extras_router.get("/", response_model=List[ResponseExtraSchema], summary="Lista extras")
+
+@extras_router.get("/", response_model=List[ResponseExtraSchema], summary="Lista extras globais")
 async def listar_extras(
     apenas_ativos: bool = True,
     session: Session = Depends(pegar_sessao)
 ):
-    """Lista todos os adicionais"""
     q = session.query(Extra)
     if apenas_ativos:
         q = q.filter(Extra.ativo == True)
@@ -60,18 +61,17 @@ async def listar_extras(
     "/",
     response_model=ResponseExtraSchema,
     status_code=status.HTTP_201_CREATED,
-    summary="Cria extra (admin)"
+    summary="Cria extra global (admin)"
 )
 async def criar_extra(
     dados: ExtraSchema,
     session: Session = Depends(pegar_sessao),
     _: Usuario = Depends(verificar_admin)
 ):
-    """Cadastra um novo adicional"""
     existe = session.query(Extra).filter(Extra.nome == dados.nome).first()
     if existe:
         raise HTTPException(status_code=400, detail="Extra já existe")
-    
+
     extra = Extra(
         nome=dados.nome,
         preco=dados.preco,
@@ -90,16 +90,15 @@ async def atualizar_extra(
     session: Session = Depends(pegar_sessao),
     _: Usuario = Depends(verificar_admin)
 ):
-    """Atualiza um adicional"""
     extra = session.query(Extra).filter(Extra.id == extra_id).first()
     if not extra:
         raise HTTPException(status_code=404, detail="Extra não encontrado")
-    
+
     extra.nome = dados.nome
     extra.preco = dados.preco
     if dados.ativo is not None:
         extra.ativo = dados.ativo
-    
+
     session.commit()
     session.refresh(extra)
     return extra
@@ -111,11 +110,10 @@ async def deletar_extra(
     session: Session = Depends(pegar_sessao),
     _: Usuario = Depends(verificar_admin)
 ):
-    """Remove um adicional"""
     extra = session.query(Extra).filter(Extra.id == extra_id).first()
     if not extra:
         raise HTTPException(status_code=404, detail="Extra não encontrado")
-    
+
     session.delete(extra)
     session.commit()
     return {"mensagem": f"Extra '{extra.nome}' removido"}
