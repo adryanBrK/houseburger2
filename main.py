@@ -1,31 +1,26 @@
 """
-main.py — VERSÃO CORRIGIDA v2.4.0
+main.py — VERSÃO CORRIGIDA v2.5.0
 ====================================
 
-MUDANÇAS v2.4.0:
-  - adicionais_router registrado: resolve o 404 em
-    GET/POST/DELETE /Produto/produtos/{id}/adicionais
-    (rotas chamadas pelo adm.html e index.html)
-  - Tabela produto_adicionais criada automaticamente no startup
-    via Base.metadata.create_all (ProdutoAdicional está em adicionais_routes.py)
-
-MUDANÇAS v2.3.0 (mantidas):
-  - cadastro_impressora_router registrado: resolve 404 em POST /Impressoras/
-  - debug_impressora_router: remover após validar persistência
-  - _inicializar() com try/except e log detalhado
+CORREÇÕES v2.5.0:
+  - Exception handlers globais adicionados → resolve CORS falso em erros 401/422/500
+  - Mantido suporte completo a adicionais, impressoras e banco automático
 """
 
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
 from sqlalchemy.orm import sessionmaker
 
 from models import Base, db, Usuario
 
-# ── Routers existentes
+# ── Routers
 from auth_routes    import auth_router
 from product_routes import product_router
 from order_routes   import order_router
@@ -34,65 +29,55 @@ from store_routes   import store_router
 from bairro_routes  import bairro_router
 from extras_routes  import extras_router
 
-# ── Routers de impressão
 from impressora_routes import (
     impressora_router,
     cadastro_impressora_router,
-    debug_impressora_router,   # REMOVA após confirmar persistência
+    debug_impressora_router,
 )
 
-# ── Adicionais por produto  ← NOVO em v2.4.0
-# Importar o módulo garante que ProdutoAdicional seja registrado
-# no Base.metadata antes do create_all rodar no startup.
 from adicionais_routes import adicionais_router
-import adicionais_routes  # noqa: F401 — necessário para Base.metadata
+import adicionais_routes  # noqa
 
 
 # ══════════════════════════════════════════════════════════════
-# LOGGING
+# LOG
 # ══════════════════════════════════════════════════════════════
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger("main")
 
 
 # ══════════════════════════════════════════════════════════════
-# INICIALIZAÇÃO DO BANCO
+# BANCO
 # ══════════════════════════════════════════════════════════════
 def _inicializar():
-    db_url    = str(db.url)
-    tipo_banco = "PostgreSQL" if "postgresql" in db_url else "SQLite (apenas dev)"
-    logger.info("Banco de dados: %s", tipo_banco)
-
     try:
         Base.metadata.create_all(bind=db)
-        logger.info("Tabelas verificadas/criadas com sucesso")
-    except Exception as exc:
-        logger.error("ERRO ao criar tabelas: %s", exc, exc_info=True)
+        logger.info("Tabelas OK")
+    except Exception as e:
+        logger.error("Erro ao criar tabelas: %s", e, exc_info=True)
         raise
 
     session = sessionmaker(bind=db)()
     try:
         admin_email = "admin@hamburgueria.com"
         existe = session.query(Usuario).filter(Usuario.email == admin_email).first()
+
         if not existe:
             session.add(Usuario(
-                nome  = "Administrador",
-                email = admin_email,
-                senha = "admin123",
-                admin = True,
-                ativo = True,
+                nome="Administrador",
+                email=admin_email,
+                senha="admin123",
+                admin=True,
+                ativo=True,
             ))
             session.commit()
-            logger.info("Admin criado  ->  %s  /  admin123", admin_email)
-        else:
-            logger.info("Admin já existe — nenhuma ação necessária")
-    except Exception as exc:
+            logger.info("Admin criado")
+    except Exception as e:
         session.rollback()
-        logger.error("ERRO ao criar admin: %s", exc, exc_info=True)
+        logger.error("Erro ao criar admin: %s", e, exc_info=True)
     finally:
         session.close()
 
@@ -102,25 +87,19 @@ def _inicializar():
 # ══════════════════════════════════════════════════════════════
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Iniciando API Hamburgueria v2.4.0")
+    logger.info("Iniciando API")
     _inicializar()
-    logger.info("API pronta para receber requisições")
     yield
-    logger.info("API encerrada")
+    logger.info("Encerrando API")
 
 
 # ══════════════════════════════════════════════════════════════
-# APLICAÇÃO FASTAPI
+# APP
 # ══════════════════════════════════════════════════════════════
 app = FastAPI(
-    title       = "API Hamburgueria",
-    description = (
-        "API completa para delivery de hamburgueria.\n\n"
-        "**Pedidos públicos:** clientes criam pedidos sem login via `POST /Pedidos/pedidos`.\n\n"
-        "**Painel admin:** autenticação via `POST /auth/login`."
-    ),
-    version  = "2.4.0",
-    lifespan = lifespan,
+    title="API Hamburgueria",
+    version="2.5.0",
+    lifespan=lifespan,
 )
 
 # ── CORS
@@ -128,10 +107,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://house-burgers.vercel.app",
-        "http://127.0.0.1:5500",
-        "http://localhost:5500",
-        "http://127.0.0.1:3000",
         "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5500",
     ],
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
@@ -139,7 +117,44 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Routers
+# ══════════════════════════════════════════════════════════════
+# 🔥 EXCEPTION HANDLERS (CORREÇÃO PRINCIPAL)
+# ══════════════════════════════════════════════════════════════
+
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "https://house-burgers.vercel.app",
+    "Access-Control-Allow-Credentials": "true",
+}
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=CORS_HEADERS,
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()},
+        headers=CORS_HEADERS,
+    )
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request, exc):
+    logger.error("Erro interno: %s", exc, exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Erro interno no servidor"},
+        headers=CORS_HEADERS,
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+# ROUTERS
+# ══════════════════════════════════════════════════════════════
 app.include_router(auth_router)
 app.include_router(product_router)
 app.include_router(order_router)
@@ -148,34 +163,23 @@ app.include_router(store_router)
 app.include_router(bairro_router)
 app.include_router(extras_router)
 
-# Adicionais por produto — NOVO v2.4.0
-# Rotas: GET/POST/DELETE /Produto/produtos/{id}/adicionais
 app.include_router(adicionais_router)
 
-# Impressão
-app.include_router(impressora_router)           # /Pedidos/impressao/...
-app.include_router(cadastro_impressora_router)  # /Impressoras/ CRUD
-app.include_router(debug_impressora_router)     # /debug/impressoras — REMOVA depois
+app.include_router(impressora_router)
+app.include_router(cadastro_impressora_router)
+app.include_router(debug_impressora_router)
 
 
 # ══════════════════════════════════════════════════════════════
-# ENDPOINTS DE STATUS
+# STATUS
 # ══════════════════════════════════════════════════════════════
-@app.get("/", tags=["Status"])
+@app.get("/")
 def raiz():
-    db_url = str(db.url)
     return {
-        "status":  "online",
-        "message": "API Hamburgueria",
-        "versao":  "2.4.0",
-        "docs":    "/docs",
-        "banco":   "PostgreSQL" if "postgresql" in db_url else "SQLite",
+        "status": "online",
+        "versao": "2.5.0",
     }
 
-
-@app.get("/health", tags=["Status"])
-def health_check():
-    return {"status": "healthy"}
-
-
-handler = app
+@app.get("/health")
+def health():
+    return {"status": "ok"}
