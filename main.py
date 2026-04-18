@@ -1,23 +1,18 @@
 """
-main.py — VERSÃO CORRIGIDA
-============================
+main.py — VERSÃO CORRIGIDA v2.4.0
+====================================
 
-PROBLEMAS CORRIGIDOS:
-  1. impressora_router registrado duas vezes era uma armadilha oculta:
-     o código original importava só "impressora_router" (prefixo /Pedidos)
-     mas o CRUD de impressoras vivia em "_impressora_router" (prefixo /Impressoras)
-     com nome privado — nunca registrado → POST /Impressoras/ retornava 404.
-     Agora importamos e registramos AMBOS com nomes públicos claros.
+MUDANÇAS v2.4.0:
+  - adicionais_router registrado: resolve o 404 em
+    GET/POST/DELETE /Produto/produtos/{id}/adicionais
+    (rotas chamadas pelo adm.html e index.html)
+  - Tabela produto_adicionais criada automaticamente no startup
+    via Base.metadata.create_all (ProdutoAdicional está em adicionais_routes.py)
 
-  2. debug_impressora_router adicionado temporariamente para validar
-     persistência sem autenticação. Remova o import e o include_router
-     após confirmar que as impressoras estão sendo salvas.
-
-  3. _inicializar() envolto em try/except com log detalhado —
-     falha silenciosa na criação do admin não travava mais o startup
-     mas também não dava nenhum indício do problema nos logs.
-
-  4. extras_router e impressora_routes antigas mantidas compatíveis.
+MUDANÇAS v2.3.0 (mantidas):
+  - cadastro_impressora_router registrado: resolve 404 em POST /Impressoras/
+  - debug_impressora_router: remover após validar persistência
+  - _inicializar() com try/except e log detalhado
 """
 
 import logging
@@ -30,7 +25,7 @@ from sqlalchemy.orm import sessionmaker
 
 from models import Base, db, Usuario
 
-# ── Routers existentes (não alterados)
+# ── Routers existentes
 from auth_routes    import auth_router
 from product_routes import product_router
 from order_routes   import order_router
@@ -39,20 +34,23 @@ from store_routes   import store_router
 from bairro_routes  import bairro_router
 from extras_routes  import extras_router
 
-# ── Routers de impressão — CORRIGIDO
-# impressora_router       → /Pedidos/impressao/... e /Pedidos/pedido/.../marcar-impresso
-# cadastro_impressora_router → /Impressoras/ (CRUD)  ← ESTE ESTAVA FALTANDO
-# debug_impressora_router → /debug/impressoras       ← remover após validar
+# ── Routers de impressão
 from impressora_routes import (
     impressora_router,
     cadastro_impressora_router,
-    debug_impressora_router,   # REMOVA esta linha após confirmar persistência
+    debug_impressora_router,   # REMOVA após confirmar persistência
 )
 
+# ── Adicionais por produto  ← NOVO em v2.4.0
+# Importar o módulo garante que ProdutoAdicional seja registrado
+# no Base.metadata antes do create_all rodar no startup.
+from adicionais_routes import adicionais_router
+import adicionais_routes  # noqa: F401 — necessário para Base.metadata
 
-# ══════════════════════════════════════════════════════════════════
-# LOGGING GLOBAL
-# ══════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════
+# LOGGING
+# ══════════════════════════════════════════════════════════════
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
@@ -61,15 +59,10 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 # INICIALIZAÇÃO DO BANCO
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 def _inicializar():
-    """
-    1. Cria todas as tabelas (se não existirem).
-    2. Insere o usuário admin padrão na primeira execução.
-    3. Loga o tipo de banco em uso.
-    """
     db_url    = str(db.url)
     tipo_banco = "PostgreSQL" if "postgresql" in db_url else "SQLite (apenas dev)"
     logger.info("Banco de dados: %s", tipo_banco)
@@ -96,7 +89,7 @@ def _inicializar():
             session.commit()
             logger.info("Admin criado  ->  %s  /  admin123", admin_email)
         else:
-            logger.info("Admin ja existe — nenhuma acao necessaria")
+            logger.info("Admin já existe — nenhuma ação necessária")
     except Exception as exc:
         session.rollback()
         logger.error("ERRO ao criar admin: %s", exc, exc_info=True)
@@ -104,29 +97,29 @@ def _inicializar():
         session.close()
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 # LIFESPAN
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Iniciando API Hamburgueria v2.3.0")
+    logger.info("Iniciando API Hamburgueria v2.4.0")
     _inicializar()
-    logger.info("API pronta para receber requisicoes")
+    logger.info("API pronta para receber requisições")
     yield
     logger.info("API encerrada")
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 # APLICAÇÃO FASTAPI
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 app = FastAPI(
     title       = "API Hamburgueria",
     description = (
         "API completa para delivery de hamburgueria.\n\n"
-        "**Pedidos publicos:** clientes criam pedidos sem login via `POST /Pedidos/pedidos`.\n\n"
-        "**Painel admin:** autenticacao via `POST /auth/login`."
+        "**Pedidos públicos:** clientes criam pedidos sem login via `POST /Pedidos/pedidos`.\n\n"
+        "**Painel admin:** autenticação via `POST /auth/login`."
     ),
-    version  = "2.3.0",
+    version  = "2.4.0",
     lifespan = lifespan,
 )
 
@@ -155,25 +148,26 @@ app.include_router(store_router)
 app.include_router(bairro_router)
 app.include_router(extras_router)
 
-# Impressão — DOIS routers separados (corrigido)
-app.include_router(impressora_router)            # /Pedidos/impressao/... e marcar-impresso
-app.include_router(cadastro_impressora_router)   # /Impressoras/ — CRUD de cadastro
+# Adicionais por produto — NOVO v2.4.0
+# Rotas: GET/POST/DELETE /Produto/produtos/{id}/adicionais
+app.include_router(adicionais_router)
 
-# Debug — REMOVA após confirmar que impressoras estão sendo salvas
-app.include_router(debug_impressora_router)      # /debug/impressoras (sem auth)
+# Impressão
+app.include_router(impressora_router)           # /Pedidos/impressao/...
+app.include_router(cadastro_impressora_router)  # /Impressoras/ CRUD
+app.include_router(debug_impressora_router)     # /debug/impressoras — REMOVA depois
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 # ENDPOINTS DE STATUS
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 @app.get("/", tags=["Status"])
 def raiz():
-    """Verificacao rapida de status da API."""
     db_url = str(db.url)
     return {
         "status":  "online",
         "message": "API Hamburgueria",
-        "versao":  "2.3.0",
+        "versao":  "2.4.0",
         "docs":    "/docs",
         "banco":   "PostgreSQL" if "postgresql" in db_url else "SQLite",
     }
@@ -181,9 +175,7 @@ def raiz():
 
 @app.get("/health", tags=["Status"])
 def health_check():
-    """Health check para monitoramento (Render, Railway, UptimeRobot)."""
     return {"status": "healthy"}
 
 
-# Handler para Render / Railway
 handler = app
