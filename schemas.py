@@ -227,6 +227,7 @@ class ItemPedidoSchema(BaseModel):
     preco_unitario: float
     variacao_id:    Optional[int] = None
     observacoes:    Optional[str] = None
+    adicionais_ids: Optional[List[int]] = []
 
     @field_validator("quantidade")
     @classmethod
