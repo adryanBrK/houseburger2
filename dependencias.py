@@ -7,10 +7,12 @@ from jose import jwt, JWTError
 from config import SECRET_KEY, ALGORITHM
 from models import db, Usuario
 
+# 🔐 HASH
 bcrypt_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# ⚠️ ajuste importante: rota deve bater com seu login real
-oauth2_schema = OAuth2PasswordBearer(tokenUrl="/auth/login")
+# 🔥 CORREÇÃO PRINCIPAL AQUI
+# Swagger (OAuth2) usa form-data → precisa apontar para /login-form
+oauth2_schema = OAuth2PasswordBearer(tokenUrl="/auth/login-form")
 
 SessionLocal = sessionmaker(bind=db, autocommit=False, autoflush=False)
 
@@ -83,14 +85,12 @@ def verificar_admin(
     usuario: Usuario = Depends(verificar_token),
 ) -> Usuario:
 
-    # ⚠️ proteção extra (evita 500 silencioso)
     if usuario is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Usuário não autenticado",
         )
 
-    # ⚠️ evita erro caso atributo não exista ou venha corrompido
     if not getattr(usuario, "admin", False):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
