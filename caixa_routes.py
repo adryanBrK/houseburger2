@@ -317,4 +317,4 @@ async def movimentacao_manual(
         "[CAIXA] %s R$%.2f | %s | saldo=R$%.2f",
         tipo.value, dados.valor, dados.descricao or "-", caixa.saldo_atual,
     )
-    return mov COLOCA ISSO MANO
+    return mov
