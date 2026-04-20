@@ -15,7 +15,6 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 
 from dependencias import pegar_sessao, verificar_admin
 from models import Caixa, MovimentacaoCaixa, TipoMovimentacao, Usuario
@@ -25,16 +24,10 @@ caixa_router = APIRouter(prefix="/Caixa", tags=["Caixa"])
 
 
 # ══════════════════════════════════════════════════════════════════
-# HELPER — obtém (ou cria) o caixa de um determinado dia
-# Centralizado aqui para ser reutilizado em order_routes também.
+# HELPER
 # ══════════════════════════════════════════════════════════════════
 
 def _obter_ou_criar_caixa(dia: date, session: Session) -> Caixa:
-    """
-    Retorna o caixa do dia informado.
-    Se não existir, cria com saldo zero usando INSERT ... ON CONFLICT
-    (via flush + merge para evitar race condition em produção).
-    """
     caixa = session.query(Caixa).filter(Caixa.data == dia).first()
     if not caixa:
         caixa = Caixa(
@@ -46,10 +39,8 @@ def _obter_ou_criar_caixa(dia: date, session: Session) -> Caixa:
         )
         session.add(caixa)
         try:
-            session.flush()   # gera o ID sem fechar a transação
+            session.flush()
         except Exception:
-            # Outro request criou o caixa simultaneamente (race condition).
-            # Rollback parcial e busca novamente.
             session.rollback()
             caixa = session.query(Caixa).filter(Caixa.data == dia).first()
             if not caixa:
@@ -64,9 +55,9 @@ def _registrar_entrada(
     pedido_id: Optional[int] = None,
 ) -> MovimentacaoCaixa:
     """
-    Registra uma ENTRADA no caixa do dia atual e atualiza os acumuladores.
-    Chamado automaticamente ao finalizar um pedido.
-    Retorna a movimentação criada (sem commit — responsabilidade do chamador).
+    Registra uma ENTRADA no caixa do dia atual.
+    Chamado automaticamente ao finalizar um pedido — independente da forma de pagamento.
+    Sem commit — responsabilidade do chamador.
     """
     if valor <= 0:
         raise ValueError(f"Valor de entrada deve ser positivo, recebido: {valor}")
@@ -170,15 +161,10 @@ async def caixa_hoje(
     session: Session = Depends(pegar_sessao),
     _: Usuario       = Depends(verificar_admin),
 ):
-    """
-    Retorna caixa_inicial, entradas, saidas, saldo_atual e lista de movimentações.
-    Se o caixa ainda não foi aberto hoje, retorna zeros sem criar registro.
-    """
     hoje  = datetime.now(timezone.utc).date()
     caixa = session.query(Caixa).filter(Caixa.data == hoje).first()
 
     if not caixa:
-        # Retorna um objeto virtual — não salva no banco até abrir explicitamente
         return {
             "id":            0,
             "data":          hoje,
@@ -249,10 +235,6 @@ async def abrir_caixa(
     session: Session = Depends(pegar_sessao),
     _: Usuario       = Depends(verificar_admin),
 ):
-    """
-    Cria o caixa do dia com um valor inicial (fundo de troco).
-    Se já existir caixa hoje, retorna 400 — não é possível abrir duas vezes.
-    """
     hoje = datetime.now(timezone.utc).date()
 
     existente = session.query(Caixa).filter(Caixa.data == hoje).first()
@@ -267,7 +249,7 @@ async def abrir_caixa(
         caixa_inicial = dados.caixa_inicial,
         entradas      = 0.0,
         saidas        = 0.0,
-        saldo_atual   = dados.caixa_inicial,  # saldo inicial = fundo de caixa
+        saldo_atual   = dados.caixa_inicial,
     )
     session.add(caixa)
 
@@ -294,16 +276,11 @@ async def movimentacao_manual(
     session: Session = Depends(pegar_sessao),
     _: Usuario       = Depends(verificar_admin),
 ):
-    """
-    Permite registrar saídas (despesas), sangrias (retirada de dinheiro)
-    ou suprimentos (adição de troco) fora do fluxo de pedidos.
-    """
     hoje  = datetime.now(timezone.utc).date()
     caixa = _obter_ou_criar_caixa(hoje, session)
     tipo  = TipoMovimentacao(dados.tipo)
 
     if tipo in (TipoMovimentacao.SAIDA, TipoMovimentacao.SANGRIA):
-        # Proteger contra saldo negativo
         if dados.valor > caixa.saldo_atual:
             raise HTTPException(
                 status_code=400,
@@ -340,4 +317,4 @@ async def movimentacao_manual(
         "[CAIXA] %s R$%.2f | %s | saldo=R$%.2f",
         tipo.value, dados.valor, dados.descricao or "-", caixa.saldo_atual,
     )
-    return mov
+    return mov COLOCA ISSO MANO
