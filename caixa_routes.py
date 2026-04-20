@@ -1,11 +1,16 @@
 """
 caixa_routes.py
 ================
-Módulo de caixa: consulta, movimentações manuais e histórico.
+Rotas existentes (não alteradas):
+  GET  /Caixa/hoje
+  GET  /Caixa/historico
+  GET  /Caixa/{data_str}
+  POST /Caixa/abrir
+  POST /Caixa/movimentacao
 
-Registre no main.py:
-    from caixa_routes import caixa_router
-    app.include_router(caixa_router)
+Rotas novas:
+  POST /Caixa/fechar             — cria snapshot em CaixaFechado
+  GET  /Caixa/historico-fechados — lista snapshots imutáveis ordenados por data desc
 """
 
 import logging
@@ -17,14 +22,14 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from dependencias import pegar_sessao, verificar_admin
-from models import Caixa, MovimentacaoCaixa, TipoMovimentacao, Usuario
+from models import Caixa, CaixaFechado, MovimentacaoCaixa, TipoMovimentacao, Usuario
 
 log = logging.getLogger("caixa_routes")
 caixa_router = APIRouter(prefix="/Caixa", tags=["Caixa"])
 
 
 # ══════════════════════════════════════════════════════════════════
-# HELPER
+# HELPERS  (inalterados)
 # ══════════════════════════════════════════════════════════════════
 
 def _obter_ou_criar_caixa(dia: date, session: Session) -> Caixa:
@@ -55,9 +60,8 @@ def _registrar_entrada(
     pedido_id: Optional[int] = None,
 ) -> MovimentacaoCaixa:
     """
-    Registra uma ENTRADA no caixa do dia atual.
-    Chamado automaticamente ao finalizar um pedido — independente da forma de pagamento.
-    Sem commit — responsabilidade do chamador.
+    Registra ENTRADA no caixa do dia. Sem commit — responsabilidade do chamador.
+    Chamado por order_routes.finalizar_pedido() na mesma transação.
     """
     if valor <= 0:
         raise ValueError(f"Valor de entrada deve ser positivo, recebido: {valor}")
@@ -127,7 +131,7 @@ class AbrirCaixaSchema(BaseModel):
 
 
 class MovimentacaoManualSchema(BaseModel):
-    tipo:      str   # SAIDA | SANGRIA | SUPRIMENTO
+    tipo:      str
     valor:     float
     descricao: Optional[str] = None
 
@@ -148,8 +152,28 @@ class MovimentacaoManualSchema(BaseModel):
         return v
 
 
+# ── Schemas do fechamento ──────────────────────────────────────────
+
+class ResponseCaixaFechadoSchema(BaseModel):
+    """
+    Schema de retorno para CaixaFechado.
+    Retorna também o nome de quem fechou (sem expor senha/email).
+    """
+    id:             int
+    data:           date
+    caixa_inicial:  float
+    total_entradas: float
+    total_saidas:   float
+    saldo_final:    float
+    fechado_em:     datetime
+    fechado_por:    Optional[str] = None   # nome do admin que fechou
+
+    class Config:
+        from_attributes = True
+
+
 # ══════════════════════════════════════════════════════════════════
-# ROTAS
+# ROTAS EXISTENTES  (inalteradas)
 # ══════════════════════════════════════════════════════════════════
 
 @caixa_router.get(
@@ -193,13 +217,54 @@ async def historico_caixas(
         raise HTTPException(status_code=400, detail="dias deve estar entre 1 e 365")
 
     inicio = datetime.now(timezone.utc).date() - timedelta(days=dias - 1)
-    caixas = (
+    return (
         session.query(Caixa)
         .filter(Caixa.data >= inicio)
         .order_by(Caixa.data.desc())
         .all()
     )
-    return caixas
+
+
+@caixa_router.get(
+    "/historico-fechados",
+    response_model=List[ResponseCaixaFechadoSchema],
+    summary="Lista caixas fechados — snapshots imutáveis (admin)",
+)
+async def historico_fechados(
+    dias:    int     = 30,
+    session: Session = Depends(pegar_sessao),
+    _: Usuario       = Depends(verificar_admin),
+):
+    """
+    Retorna os snapshots de fechamento, do mais recente para o mais antigo.
+    Parâmetro `dias` filtra pelo período (padrão: últimos 30 dias).
+    """
+    if dias < 1 or dias > 365:
+        raise HTTPException(status_code=400, detail="dias deve estar entre 1 e 365")
+
+    inicio = datetime.now(timezone.utc).date() - timedelta(days=dias - 1)
+    fechados = (
+        session.query(CaixaFechado)
+        .filter(CaixaFechado.data >= inicio)
+        .order_by(CaixaFechado.fechado_em.desc())
+        .all()
+    )
+
+    # Montar response manualmente para injetar o nome do admin
+    resultado = []
+    for f in fechados:
+        resultado.append({
+            "id":             f.id,
+            "data":           f.data,
+            "caixa_inicial":  f.caixa_inicial,
+            "total_entradas": f.total_entradas,
+            "total_saidas":   f.total_saidas,
+            "saldo_final":    f.saldo_final,
+            "fechado_em":     f.fechado_em,
+            "fechado_por":    f.fechado_por.nome if f.fechado_por else None,
+        })
+
+    return resultado
 
 
 @caixa_router.get(
@@ -318,3 +383,101 @@ async def movimentacao_manual(
         tipo.value, dados.valor, dados.descricao or "-", caixa.saldo_atual,
     )
     return mov
+
+
+# ══════════════════════════════════════════════════════════════════
+# ROTA NOVA — POST /Caixa/fechar
+# ══════════════════════════════════════════════════════════════════
+
+@caixa_router.post(
+    "/fechar",
+    response_model=ResponseCaixaFechadoSchema,
+    status_code=status.HTTP_201_CREATED,
+    summary="Fecha o caixa do dia e grava snapshot imutável (admin)",
+)
+async def fechar_caixa(
+    session: Session  = Depends(pegar_sessao),
+    admin: Usuario    = Depends(verificar_admin),
+):
+    """
+    ## O que este endpoint faz
+
+    1. Busca o `Caixa` do dia atual.
+    2. Verifica se já existe um `CaixaFechado` para hoje — impede duplicação.
+    3. Cria um registro em `CaixaFechado` copiando os valores atuais do caixa
+       (snapshot imutável).
+    4. **Não altera nem apaga** o `Caixa` original — ele continua acessível.
+
+    ## O que NÃO faz
+
+    - Não impede novas movimentações no `Caixa` após o fechamento.
+      Se quiser bloquear, implemente um campo `fechado=True` em `Caixa` futuramente.
+    - Não consolida pedidos pendentes — apenas copia o estado atual.
+
+    ## Retorna
+
+    O snapshot gravado com data, valores e horário do fechamento.
+    """
+    hoje = datetime.now(timezone.utc).date()
+
+    # ── 1. Verificar se já foi fechado hoje
+    ja_fechado = session.query(CaixaFechado).filter(CaixaFechado.data == hoje).first()
+    if ja_fechado:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"O caixa de {hoje} já foi fechado às "
+                f"{ja_fechado.fechado_em.strftime('%H:%M')} UTC "
+                f"(id={ja_fechado.id})"
+            ),
+        )
+
+    # ── 2. Buscar o caixa do dia
+    caixa = session.query(Caixa).filter(Caixa.data == hoje).first()
+    if not caixa:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Nenhum caixa aberto para {hoje}. "
+                "Abra o caixa com POST /Caixa/abrir antes de fechar."
+            ),
+        )
+
+    # ── 3. Criar snapshot
+    agora         = datetime.now(timezone.utc)
+    saldo_final   = caixa.caixa_inicial + caixa.entradas - caixa.saidas
+
+    fechado = CaixaFechado(
+        data           = hoje,
+        caixa_inicial  = caixa.caixa_inicial,
+        total_entradas = caixa.entradas,
+        total_saidas   = caixa.saidas,
+        saldo_final    = saldo_final,
+        fechado_em     = agora,
+        fechado_por_id = admin.id,
+    )
+    session.add(fechado)
+
+    try:
+        session.commit()
+        session.refresh(fechado)
+    except Exception as exc:
+        session.rollback()
+        log.error("[CAIXA] Erro ao fechar caixa: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Erro ao fechar caixa: {exc}")
+
+    log.info(
+        "[CAIXA] Fechado por %s | data=%s | saldo=R$%.2f",
+        admin.nome, hoje, saldo_final,
+    )
+
+    return {
+        "id":             fechado.id,
+        "data":           fechado.data,
+        "caixa_inicial":  fechado.caixa_inicial,
+        "total_entradas": fechado.total_entradas,
+        "total_saidas":   fechado.total_saidas,
+        "saldo_final":    fechado.saldo_final,
+        "fechado_em":     fechado.fechado_em,
+        "fechado_por":    admin.nome,
+    }
