@@ -1,21 +1,17 @@
 """
 models.py
 =========
-Adições nesta versão (caixa):
+Adição nesta versão: CaixaFechado
 
-  1. Caixa — um registro por dia de operação.
-     Controla caixa_inicial, entradas, saidas e saldo_atual.
-     Chave unique em `data` (date truncada para meia-noite UTC)
-     garante que nunca existam dois registros para o mesmo dia.
+  CaixaFechado é um snapshot imutável do Caixa no momento do fechamento.
+  Não substitui nem altera o Caixa original — convivem na mesma base.
 
-  2. MovimentacaoCaixa — cada transação individual.
-     tipo: "ENTRADA" | "SAIDA" | "SANGRIA" | "SUPRIMENTO"
-     pedido_id nullable: movimentações manuais não têm pedido vinculado.
+  Por que tabela separada em vez de um campo `fechado=True` em Caixa:
+  - Separa historico mutável (Caixa) de registro imutável (CaixaFechado).
+  - Garante que ninguém acidentalmente altera um caixa já fechado via ORM.
+  - Permite auditoria independente.
 
-  3. Pedido.movimentacoes — relationship inverso (apenas leitura).
-     Permite navegar de um pedido para sua movimentação sem query extra.
-
-Nada do que existia antes foi alterado.
+Nenhuma linha existente foi alterada.
 """
 
 import os
@@ -98,10 +94,10 @@ class FormaPagamento(str, enum.Enum):
 
 
 class TipoMovimentacao(str, enum.Enum):
-    ENTRADA    = "ENTRADA"     # venda finalizada
-    SAIDA      = "SAIDA"       # despesa registrada manualmente
-    SANGRIA    = "SANGRIA"     # retirada de dinheiro do caixa
-    SUPRIMENTO = "SUPRIMENTO"  # adição de troco/fundo de caixa
+    ENTRADA    = "ENTRADA"
+    SAIDA      = "SAIDA"
+    SANGRIA    = "SANGRIA"
+    SUPRIMENTO = "SUPRIMENTO"
 
 
 # ==========================
@@ -273,30 +269,18 @@ class Usuario(Base):
 
 
 # ==========================
-# CAIXA
-# Um registro por dia (chave única em `data`).
-# `data` é sempre a meia-noite UTC do dia (date truncado).
-# Nunca use TIMESTAMP com hora aqui — dois commits no mesmo dia
-# não podem criar dois caixas diferentes.
+# CAIXA  (diário — mutável enquanto aberto)
 # ==========================
 class Caixa(Base):
     __tablename__ = "caixa"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-
-    # Data do dia de operação — tipo Date (somente data, sem hora).
-    # unique=True garante um único caixa por dia.
-    data = Column(Date, nullable=False, unique=True)
-
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    data          = Column(Date, nullable=False, unique=True)
     caixa_inicial = Column(Float, nullable=False, default=0.0)
     entradas      = Column(Float, nullable=False, default=0.0)
     saidas        = Column(Float, nullable=False, default=0.0)
-
-    # saldo_atual = caixa_inicial + entradas - saidas
-    # Recalculado a cada movimentação — nunca vai a negativo por regra de negócio.
-    saldo_atual = Column(Float, nullable=False, default=0.0)
-
-    criado_em = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    saldo_atual   = Column(Float, nullable=False, default=0.0)
+    criado_em     = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     movimentacoes = relationship(
         "MovimentacaoCaixa", back_populates="caixa", cascade="all, delete-orphan"
@@ -304,8 +288,35 @@ class Caixa(Base):
 
 
 # ==========================
+# CAIXA FECHADO  (snapshot imutável após fechamento)
+#
+# Não usa FK para Caixa intencionalmente: o snapshot deve sobreviver
+# mesmo que o Caixa original seja limpo/arquivado no futuro.
+# unique=True em `data` impede fechamento duplo no mesmo dia.
+# ==========================
+class CaixaFechado(Base):
+    __tablename__ = "caixas_fechados"
+
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Data do dia operacional — unique garante um fechamento por dia
+    data            = Column(Date, nullable=False, unique=True)
+
+    # Snapshot dos valores no momento do fechamento
+    caixa_inicial   = Column(Float, nullable=False)
+    total_entradas  = Column(Float, nullable=False)
+    total_saidas    = Column(Float, nullable=False)
+    saldo_final     = Column(Float, nullable=False)
+
+    # Quem fechou e quando
+    fechado_em      = Column(DateTime(timezone=True), nullable=False)
+    fechado_por_id  = Column(Integer, ForeignKey("usuarios.id"), nullable=True)
+
+    fechado_por = relationship("Usuario")
+
+
+# ==========================
 # MOVIMENTAÇÕES DO CAIXA
-# Cada transação individual — venda, sangria, suprimento, despesa.
 # ==========================
 class MovimentacaoCaixa(Base):
     __tablename__ = "movimentacoes_caixa"
@@ -319,9 +330,7 @@ class MovimentacaoCaixa(Base):
     descricao = Column(String, nullable=True)
     criado_em = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    # FK para o caixa do dia — sempre preenchido
     caixa_id  = Column(Integer, ForeignKey("caixa.id"), nullable=False)
-    # FK para o pedido — preenchido apenas em movimentações automáticas de venda
     pedido_id = Column(Integer, ForeignKey("pedidos.id"), nullable=True)
 
     caixa  = relationship("Caixa", back_populates="movimentacoes")
@@ -380,8 +389,8 @@ class Pedido(Base):
 
     usuario        = relationship("Usuario", back_populates="pedidos")
     bairro         = relationship("Bairro", back_populates="pedidos")
-    itens          = relationship("ItemPedido",    back_populates="pedido", cascade="all, delete-orphan")
-    logs_impressao = relationship("LogImpressao",  back_populates="pedido", cascade="all, delete-orphan")
+    itens          = relationship("ItemPedido",       back_populates="pedido", cascade="all, delete-orphan")
+    logs_impressao = relationship("LogImpressao",     back_populates="pedido", cascade="all, delete-orphan")
     movimentacoes  = relationship("MovimentacaoCaixa", back_populates="pedido")
 
 
