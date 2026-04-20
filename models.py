@@ -1,27 +1,21 @@
 """
 models.py
 =========
-Mudanças em relação à versão anterior:
+Adições nesta versão (caixa):
 
-1. AdicionalProduto (antes) → REMOVIDO.
-   Era N:1 (adicional pertencia a um produto). Agora é N:N.
+  1. Caixa — um registro por dia de operação.
+     Controla caixa_inicial, entradas, saidas e saldo_atual.
+     Chave unique em `data` (date truncada para meia-noite UTC)
+     garante que nunca existam dois registros para o mesmo dia.
 
-2. Adicional — NOVO model global.
-   Não pertence a nenhum produto nem categoria.
-   Pode ser vinculado a quantos produtos quiser.
+  2. MovimentacaoCaixa — cada transação individual.
+     tipo: "ENTRADA" | "SAIDA" | "SANGRIA" | "SUPRIMENTO"
+     pedido_id nullable: movimentações manuais não têm pedido vinculado.
 
-3. produto_adicional — tabela intermediária N:N.
-   Criada com Table() do SQLAlchemy (padrão para secondary).
+  3. Pedido.movimentacoes — relationship inverso (apenas leitura).
+     Permite navegar de um pedido para sua movimentação sem query extra.
 
-4. Produto.adicionais agora usa secondary=produto_adicional.
-   cascade e lazy configurados corretamente para N:N.
-
-5. ItemPedido — dois campos novos:
-   - adicionais_nomes: string serializada dos adicionais escolhidos
-     (ex: "Queijo Extra, Bacon") — salva o snapshot no momento do pedido.
-   - adicionais_preco: soma dos preços dos adicionais no momento do pedido.
-   Estratégia de snapshot: o preço do adicional pode mudar depois;
-   o pedido deve guardar o valor exato cobrado.
+Nada do que existia antes foi alterado.
 """
 
 import os
@@ -32,7 +26,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     create_engine, Column, String, Integer, Boolean,
-    Float, ForeignKey, DateTime, Text, Enum as SAEnum, Table,
+    Float, ForeignKey, DateTime, Text, Enum as SAEnum, Table, Date,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -73,25 +67,12 @@ Base = declarative_base()
 
 # ══════════════════════════════════════════════════════════════════
 # TABELA INTERMEDIÁRIA N:N  —  produto ↔ adicional
-# Criada ANTES das classes que a referenciam.
-# Usa Table() simples (sem model próprio) porque não precisa de
-# campos extras na associação — só as duas FKs.
 # ══════════════════════════════════════════════════════════════════
 produto_adicional = Table(
     "produto_adicional",
     Base.metadata,
-    Column(
-        "produto_id",
-        Integer,
-        ForeignKey("produtos.id", ondelete="CASCADE"),
-        primary_key=True,
-    ),
-    Column(
-        "adicional_id",
-        Integer,
-        ForeignKey("adicionais.id", ondelete="CASCADE"),
-        primary_key=True,
-    ),
+    Column("produto_id",   Integer, ForeignKey("produtos.id",   ondelete="CASCADE"), primary_key=True),
+    Column("adicional_id", Integer, ForeignKey("adicionais.id", ondelete="CASCADE"), primary_key=True),
 )
 
 
@@ -114,6 +95,13 @@ class FormaPagamento(str, enum.Enum):
     PIX      = "PIX"
     DINHEIRO = "DINHEIRO"
     CARTAO   = "CARTAO"
+
+
+class TipoMovimentacao(str, enum.Enum):
+    ENTRADA    = "ENTRADA"     # venda finalizada
+    SAIDA      = "SAIDA"       # despesa registrada manualmente
+    SANGRIA    = "SANGRIA"     # retirada de dinheiro do caixa
+    SUPRIMENTO = "SUPRIMENTO"  # adição de troco/fundo de caixa
 
 
 # ==========================
@@ -144,21 +132,18 @@ class Porcao(Base):
 
 
 # ==========================
-# ADICIONAIS  (globais — não pertencem a produto nem categoria)
+# ADICIONAIS (globais)
 # ==========================
 class Adicional(Base):
     __tablename__ = "adicionais"
 
-    id              = Column(Integer, primary_key=True, autoincrement=True)
-    nome            = Column(String, nullable=False, unique=True)
-    descricao       = Column(String, nullable=True)
-    preco           = Column(Float, nullable=False, default=0.0)
-    ativo           = Column(Boolean, default=True)
-    # Quantidade máxima que o cliente pode pedir deste adicional por item.
-    # None = sem limite.
-    limite_qtd      = Column(Integer, nullable=True)
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    nome       = Column(String, nullable=False, unique=True)
+    descricao  = Column(String, nullable=True)
+    preco      = Column(Float, nullable=False, default=0.0)
+    ativo      = Column(Boolean, default=True)
+    limite_qtd = Column(Integer, nullable=True)
 
-    # Produtos que têm este adicional disponível (lado inverso do N:N)
     produtos = relationship(
         "Produto",
         secondary=produto_adicional,
@@ -181,17 +166,14 @@ class Produto(Base):
     categoria_id = Column(Integer, ForeignKey("categorias.id"), nullable=False)
     porcao_id    = Column(Integer, ForeignKey("porcoes.id"), nullable=True)
 
-    categoria = relationship("Categoria", back_populates="produtos")
-    porcao    = relationship("Porcao", back_populates="produtos")
-    variacoes = relationship(
-        "VariacaoProduto", back_populates="produto", cascade="all, delete-orphan"
-    )
-    # N:N com Adicional via tabela intermediária produto_adicional
+    categoria  = relationship("Categoria", back_populates="produtos")
+    porcao     = relationship("Porcao", back_populates="produtos")
+    variacoes  = relationship("VariacaoProduto", back_populates="produto", cascade="all, delete-orphan")
     adicionais = relationship(
         "Adicional",
         secondary=produto_adicional,
         back_populates="produtos",
-        lazy="selectin",   # carrega junto com o produto automaticamente
+        lazy="selectin",
     )
 
 
@@ -291,6 +273,62 @@ class Usuario(Base):
 
 
 # ==========================
+# CAIXA
+# Um registro por dia (chave única em `data`).
+# `data` é sempre a meia-noite UTC do dia (date truncado).
+# Nunca use TIMESTAMP com hora aqui — dois commits no mesmo dia
+# não podem criar dois caixas diferentes.
+# ==========================
+class Caixa(Base):
+    __tablename__ = "caixa"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Data do dia de operação — tipo Date (somente data, sem hora).
+    # unique=True garante um único caixa por dia.
+    data = Column(Date, nullable=False, unique=True)
+
+    caixa_inicial = Column(Float, nullable=False, default=0.0)
+    entradas      = Column(Float, nullable=False, default=0.0)
+    saidas        = Column(Float, nullable=False, default=0.0)
+
+    # saldo_atual = caixa_inicial + entradas - saidas
+    # Recalculado a cada movimentação — nunca vai a negativo por regra de negócio.
+    saldo_atual = Column(Float, nullable=False, default=0.0)
+
+    criado_em = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    movimentacoes = relationship(
+        "MovimentacaoCaixa", back_populates="caixa", cascade="all, delete-orphan"
+    )
+
+
+# ==========================
+# MOVIMENTAÇÕES DO CAIXA
+# Cada transação individual — venda, sangria, suprimento, despesa.
+# ==========================
+class MovimentacaoCaixa(Base):
+    __tablename__ = "movimentacoes_caixa"
+
+    id        = Column(Integer, primary_key=True, autoincrement=True)
+    tipo      = Column(
+        SAEnum(TipoMovimentacao, values_callable=lambda e: [i.value for i in e]),
+        nullable=False,
+    )
+    valor     = Column(Float, nullable=False)
+    descricao = Column(String, nullable=True)
+    criado_em = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    # FK para o caixa do dia — sempre preenchido
+    caixa_id  = Column(Integer, ForeignKey("caixa.id"), nullable=False)
+    # FK para o pedido — preenchido apenas em movimentações automáticas de venda
+    pedido_id = Column(Integer, ForeignKey("pedidos.id"), nullable=True)
+
+    caixa  = relationship("Caixa", back_populates="movimentacoes")
+    pedido = relationship("Pedido", back_populates="movimentacoes")
+
+
+# ==========================
 # PEDIDOS
 # ==========================
 class Pedido(Base):
@@ -342,17 +380,13 @@ class Pedido(Base):
 
     usuario        = relationship("Usuario", back_populates="pedidos")
     bairro         = relationship("Bairro", back_populates="pedidos")
-    itens          = relationship("ItemPedido", back_populates="pedido", cascade="all, delete-orphan")
-    logs_impressao = relationship("LogImpressao", back_populates="pedido", cascade="all, delete-orphan")
+    itens          = relationship("ItemPedido",    back_populates="pedido", cascade="all, delete-orphan")
+    logs_impressao = relationship("LogImpressao",  back_populates="pedido", cascade="all, delete-orphan")
+    movimentacoes  = relationship("MovimentacaoCaixa", back_populates="pedido")
 
 
 # ==========================
 # ITENS DO PEDIDO
-# Campos adicionados:
-#   adicionais_nomes — snapshot dos nomes (ex: "Queijo Extra, Bacon")
-#   adicionais_preco — soma dos preços dos adicionais no momento do pedido
-# Estratégia de snapshot: preços podem mudar; o pedido registra o que
-# foi cobrado. Não usamos FK para Adicional aqui de propósito.
 # ==========================
 class ItemPedido(Base):
     __tablename__ = "itens_pedidos"
@@ -361,9 +395,8 @@ class ItemPedido(Base):
     quantidade       = Column(Integer, nullable=False)
     nomedoproduto    = Column(String, nullable=False)
     variacao_nome    = Column(String, nullable=True)
-    preco_unitario   = Column(Float, nullable=False)   # preço base + variação
-    # Adicionais escolhidos pelo cliente para este item específico
-    adicionais_nomes = Column(String, nullable=True)   # "Queijo Extra, Bacon"
+    preco_unitario   = Column(Float, nullable=False)
+    adicionais_nomes = Column(String, nullable=True)
     adicionais_preco = Column(Float, nullable=False, default=0.0)
     observacoes      = Column(Text, nullable=True)
 
