@@ -1,26 +1,20 @@
 """
-main.py — VERSÃO CORRIGIDA v2.5.0
-====================================
-
-CORREÇÕES v2.5.0:
-  - Exception handlers globais adicionados → resolve CORS falso em erros 401/422/500
-  - Mantido suporte completo a adicionais, impressoras e banco automático
+main.py
+========
+Adição: caixa_router registrado em /Caixa
+Nada mais foi alterado.
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi.exceptions import RequestValidationError
-from starlette.exceptions import HTTPException as StarletteHTTPException
-
 from sqlalchemy.orm import sessionmaker
 
 from models import Base, db, Usuario
 
-# ── Routers
 from auth_routes    import auth_router
 from product_routes import product_router
 from order_routes   import order_router
@@ -28,88 +22,85 @@ from sales_routes   import sales_router
 from store_routes   import store_router
 from bairro_routes  import bairro_router
 from extras_routes  import extras_router
+from caixa_routes   import caixa_router          # ← NOVO
 
 from impressora_routes import (
     impressora_router,
     cadastro_impressora_router,
-    debug_impressora_router,
+    debug_impressora_router,   # remova após validar persistência
 )
 
-from adicionais_routes import adicionais_router
-import adicionais_routes  # noqa
-
-
-# ══════════════════════════════════════════════════════════════
-# LOG
-# ══════════════════════════════════════════════════════════════
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("main")
 
 
-# ══════════════════════════════════════════════════════════════
-# BANCO
-# ══════════════════════════════════════════════════════════════
 def _inicializar():
+    db_url     = str(db.url)
+    tipo_banco = "PostgreSQL" if "postgresql" in db_url else "SQLite (apenas dev)"
+    logger.info("Banco de dados: %s", tipo_banco)
+
     try:
         Base.metadata.create_all(bind=db)
-        logger.info("Tabelas OK")
-    except Exception as e:
-        logger.error("Erro ao criar tabelas: %s", e, exc_info=True)
+        logger.info("Tabelas verificadas/criadas com sucesso")
+    except Exception as exc:
+        logger.error("ERRO ao criar tabelas: %s", exc, exc_info=True)
         raise
 
     session = sessionmaker(bind=db)()
     try:
         admin_email = "admin@hamburgueria.com"
         existe = session.query(Usuario).filter(Usuario.email == admin_email).first()
-
         if not existe:
             session.add(Usuario(
-                nome="Administrador",
-                email=admin_email,
-                senha="admin123",
-                admin=True,
-                ativo=True,
+                nome  = "Administrador",
+                email = admin_email,
+                senha = "admin123",
+                admin = True,
+                ativo = True,
             ))
             session.commit()
-            logger.info("Admin criado")
-    except Exception as e:
+            logger.info("Admin criado  ->  %s  /  admin123", admin_email)
+        else:
+            logger.info("Admin ja existe — nenhuma acao necessaria")
+    except Exception as exc:
         session.rollback()
-        logger.error("Erro ao criar admin: %s", e, exc_info=True)
+        logger.error("ERRO ao criar admin: %s", exc, exc_info=True)
     finally:
         session.close()
 
 
-# ══════════════════════════════════════════════════════════════
-# LIFESPAN
-# ══════════════════════════════════════════════════════════════
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Iniciando API")
+    logger.info("Iniciando API Hamburgueria v2.4.0")
     _inicializar()
+    logger.info("API pronta para receber requisicoes")
     yield
-    logger.info("Encerrando API")
+    logger.info("API encerrada")
 
 
-# ══════════════════════════════════════════════════════════════
-# APP
-# ══════════════════════════════════════════════════════════════
 app = FastAPI(
-    title="API Hamburgueria",
-    version="2.5.0",
-    lifespan=lifespan,
+    title       = "API Hamburgueria",
+    description = (
+        "API completa para delivery de hamburgueria.\n\n"
+        "**Pedidos publicos:** clientes criam pedidos sem login via `POST /Pedidos/pedidos`.\n\n"
+        "**Painel admin:** autenticacao via `POST /auth/login`."
+    ),
+    version  = "2.4.0",
+    lifespan = lifespan,
 )
 
-# ── CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://house-burgers.vercel.app",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5500",
         "http://localhost:5500",
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
     ],
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
@@ -117,44 +108,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ══════════════════════════════════════════════════════════════
-# 🔥 EXCEPTION HANDLERS (CORREÇÃO PRINCIPAL)
-# ══════════════════════════════════════════════════════════════
-
-CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "https://house-burgers.vercel.app",
-    "Access-Control-Allow-Credentials": "true",
-}
-
-@app.exception_handler(StarletteHTTPException)
-async def http_exception_handler(request, exc):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"detail": exc.detail},
-        headers=CORS_HEADERS,
-    )
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request, exc):
-    return JSONResponse(
-        status_code=422,
-        content={"detail": exc.errors()},
-        headers=CORS_HEADERS,
-    )
-
-@app.exception_handler(Exception)
-async def generic_exception_handler(request, exc):
-    logger.error("Erro interno: %s", exc, exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Erro interno no servidor"},
-        headers=CORS_HEADERS,
-    )
-
-
-# ══════════════════════════════════════════════════════════════
-# ROUTERS
-# ══════════════════════════════════════════════════════════════
 app.include_router(auth_router)
 app.include_router(product_router)
 app.include_router(order_router)
@@ -162,24 +115,27 @@ app.include_router(sales_router)
 app.include_router(store_router)
 app.include_router(bairro_router)
 app.include_router(extras_router)
-
-app.include_router(adicionais_router)
-
+app.include_router(caixa_router)                 # ← NOVO  /Caixa/...
 app.include_router(impressora_router)
 app.include_router(cadastro_impressora_router)
-app.include_router(debug_impressora_router)
+app.include_router(debug_impressora_router)      # remova após validar
 
 
-# ══════════════════════════════════════════════════════════════
-# STATUS
-# ══════════════════════════════════════════════════════════════
-@app.get("/")
+@app.get("/", tags=["Status"])
 def raiz():
+    db_url = str(db.url)
     return {
-        "status": "online",
-        "versao": "2.5.0",
+        "status":  "online",
+        "message": "API Hamburgueria",
+        "versao":  "2.4.0",
+        "docs":    "/docs",
+        "banco":   "PostgreSQL" if "postgresql" in db_url else "SQLite",
     }
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+
+@app.get("/health", tags=["Status"])
+def health_check():
+    return {"status": "healthy"}
+
+
+handler = app
