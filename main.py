@@ -23,6 +23,7 @@ from store_routes   import store_router
 from bairro_routes  import bairro_router
 from extras_routes  import extras_router
 from caixa_routes   import caixa_router          # ← NOVO
+from adicionais_routes import adicionais_router
 
 from impressora_routes import (
     impressora_router,
@@ -119,6 +120,7 @@ app.include_router(caixa_router)                 # ← NOVO  /Caixa/...
 app.include_router(impressora_router)
 app.include_router(cadastro_impressora_router)
 app.include_router(debug_impressora_router)      # remova após validar
+app.include_router(adicionais_router)
 
 
 @app.get("/", tags=["Status"])
