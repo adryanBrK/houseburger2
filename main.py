@@ -16,13 +16,14 @@ from sqlalchemy.orm import sessionmaker
 
 from models import Base, db, Usuario
 
-from auth_routes    import auth_router
-from product_routes import product_router
-from order_routes   import order_router
-from sales_routes   import sales_router
-from store_routes   import store_router
-from caixa_routes   import caixa_router
-from extras_routes  import extras_router
+from auth_routes         import auth_router
+from product_routes      import product_router
+from order_routes        import order_router
+from sales_routes        import sales_router
+from store_routes        import store_router
+from caixa_routes        import caixa_router
+from extras_routes       import extras_router
+from adicionais_routes   import adicionais_router   # ← ADICIONADO
 
 # bairro_router  → /Bairros/... (rota original — não alterar)
 # delivery_router → /delivery/... (alias — mesmo código)
@@ -114,11 +115,12 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(product_router)
+app.include_router(adicionais_router)        # ← ADICIONADO (deve vir antes de order_router)
 app.include_router(order_router)
 app.include_router(sales_router)
 app.include_router(store_router)
-app.include_router(bairro_router)      # /Bairros/... — rota original
-app.include_router(delivery_router)   # /delivery/... — alias
+app.include_router(bairro_router)            # /Bairros/... — rota original
+app.include_router(delivery_router)          # /delivery/... — alias
 app.include_router(caixa_router)
 app.include_router(extras_router)
 app.include_router(impressora_router)
