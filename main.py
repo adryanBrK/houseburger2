@@ -1,7 +1,8 @@
 """
 main.py
 ========
-Adição: caixa_router registrado em /Caixa
+Adição: delivery_router registrado em /delivery
+(alias para bairro_router, mesma lógica, prefixo diferente)
 Nada mais foi alterado.
 """
 
@@ -20,15 +21,17 @@ from product_routes import product_router
 from order_routes   import order_router
 from sales_routes   import sales_router
 from store_routes   import store_router
-from bairro_routes  import bairro_router
+from caixa_routes   import caixa_router
 from extras_routes  import extras_router
-from caixa_routes   import caixa_router          # ← NOVO
-from adicionais_routes import adicionais_router
+
+# bairro_router  → /Bairros/... (rota original — não alterar)
+# delivery_router → /delivery/... (alias — mesmo código)
+from bairro_routes import bairro_router, delivery_router
 
 from impressora_routes import (
     impressora_router,
     cadastro_impressora_router,
-    debug_impressora_router,   # remova após validar persistência
+    debug_impressora_router,
 )
 
 logging.basicConfig(
@@ -114,13 +117,13 @@ app.include_router(product_router)
 app.include_router(order_router)
 app.include_router(sales_router)
 app.include_router(store_router)
-app.include_router(bairro_router)
+app.include_router(bairro_router)      # /Bairros/... — rota original
+app.include_router(delivery_router)   # /delivery/... — alias
+app.include_router(caixa_router)
 app.include_router(extras_router)
-app.include_router(caixa_router)                 # ← NOVO  /Caixa/...
 app.include_router(impressora_router)
 app.include_router(cadastro_impressora_router)
-app.include_router(debug_impressora_router)      # remova após validar
-app.include_router(adicionais_router)
+app.include_router(debug_impressora_router)
 
 
 @app.get("/", tags=["Status"])
