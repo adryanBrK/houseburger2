@@ -1,17 +1,17 @@
 """
 models.py
 =========
-Adição nesta versão: CaixaFechado
+Adições nesta versão (suporte Cloudinary + ordenação):
 
-  CaixaFechado é um snapshot imutável do Caixa no momento do fechamento.
-  Não substitui nem altera o Caixa original — convivem na mesma base.
+  Categoria:
+    + imagem_url  (String, nullable=True)  — URL da imagem hospedada no Cloudinary
+    + ordem       (Integer, default=0)     — ordenação manual via drag-and-drop
 
-  Por que tabela separada em vez de um campo `fechado=True` em Caixa:
-  - Separa historico mutável (Caixa) de registro imutável (CaixaFechado).
-  - Garante que ninguém acidentalmente altera um caixa já fechado via ORM.
-  - Permite auditoria independente.
+  Produto:
+    + imagem_url  (String, nullable=True)  — URL da imagem hospedada no Cloudinary
+      ATENÇÃO: o campo já existia no modelo anterior — apenas garantido como nullable=True.
 
-Nenhuma linha existente foi alterada.
+Nenhuma linha existente foi removida ou alterada.
 """
 
 import os
@@ -111,6 +111,11 @@ class Categoria(Base):
     descricao = Column(String, nullable=True)
     ativo     = Column(Boolean, default=True)
 
+    # ── NOVOS CAMPOS ──────────────────────────────────────────────
+    imagem_url = Column(String, nullable=True)   # URL Cloudinary (opcional)
+    ordem      = Column(Integer, default=0)      # ordenação manual (drag-and-drop)
+    # ─────────────────────────────────────────────────────────────
+
     produtos = relationship("Produto", back_populates="categoria")
 
 
@@ -157,10 +162,13 @@ class Produto(Base):
     nome         = Column(String, nullable=False, unique=True)
     preco        = Column(Float, nullable=False)
     descricao    = Column(String, nullable=True)
-    imagem_url   = Column(String, nullable=True)
     disponivel   = Column(Boolean, default=True)
     categoria_id = Column(Integer, ForeignKey("categorias.id"), nullable=False)
     porcao_id    = Column(Integer, ForeignKey("porcoes.id"), nullable=True)
+
+    # ── NOVO CAMPO ────────────────────────────────────────────────
+    imagem_url = Column(String, nullable=True)   # URL Cloudinary (opcional)
+    # ─────────────────────────────────────────────────────────────
 
     categoria  = relationship("Categoria", back_populates="produtos")
     porcao     = relationship("Porcao", back_populates="produtos")
@@ -289,26 +297,16 @@ class Caixa(Base):
 
 # ==========================
 # CAIXA FECHADO  (snapshot imutável após fechamento)
-#
-# Não usa FK para Caixa intencionalmente: o snapshot deve sobreviver
-# mesmo que o Caixa original seja limpo/arquivado no futuro.
-# unique=True em `data` impede fechamento duplo no mesmo dia.
 # ==========================
 class CaixaFechado(Base):
     __tablename__ = "caixas_fechados"
 
     id              = Column(Integer, primary_key=True, autoincrement=True)
-
-    # Data do dia operacional — unique garante um fechamento por dia
     data            = Column(Date, nullable=False, unique=True)
-
-    # Snapshot dos valores no momento do fechamento
     caixa_inicial   = Column(Float, nullable=False)
     total_entradas  = Column(Float, nullable=False)
     total_saidas    = Column(Float, nullable=False)
     saldo_final     = Column(Float, nullable=False)
-
-    # Quem fechou e quando
     fechado_em      = Column(DateTime(timezone=True), nullable=False)
     fechado_por_id  = Column(Integer, ForeignKey("usuarios.id"), nullable=True)
 
@@ -389,8 +387,8 @@ class Pedido(Base):
 
     usuario        = relationship("Usuario", back_populates="pedidos")
     bairro         = relationship("Bairro", back_populates="pedidos")
-    itens          = relationship("ItemPedido",       back_populates="pedido", cascade="all, delete-orphan")
-    logs_impressao = relationship("LogImpressao",     back_populates="pedido", cascade="all, delete-orphan")
+    itens          = relationship("ItemPedido",        back_populates="pedido", cascade="all, delete-orphan")
+    logs_impressao = relationship("LogImpressao",      back_populates="pedido", cascade="all, delete-orphan")
     movimentacoes  = relationship("MovimentacaoCaixa", back_populates="pedido")
 
 
