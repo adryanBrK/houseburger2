@@ -35,15 +35,21 @@ class TokenSchema(BaseModel):
 # ==========================
 class CategoriaSchema(BaseModel):
     nome:      str
-    descricao: Optional[str] = None
+    descricao: Optional[str]  = None
     ativo:     Optional[bool] = True
+    # imagem_url e ordem são gerenciados por rotas dedicadas — não entram na criação direta
+    # mas podem ser passados caso o front queira
+    imagem_url: Optional[str] = None
+    ordem:      Optional[int] = 0
 
 
 class ResponseCategoriaSchema(BaseModel):
-    id:        int
-    nome:      str
-    descricao: Optional[str]
-    ativo:     bool
+    id:         int
+    nome:       str
+    descricao:  Optional[str]
+    ativo:      bool
+    imagem_url: Optional[str] = None   # ← NOVO
+    ordem:      int = 0                # ← NOVO
 
     class Config:
         from_attributes = True
@@ -127,7 +133,7 @@ class ResponseProdutoSchema(BaseModel):
     nome:         str
     descricao:    Optional[str]
     preco:        float
-    imagem_url:   Optional[str]
+    imagem_url:   Optional[str]   # ← mantido (agora gerenciado pelo Cloudinary)
     disponivel:   bool
     categoria_id: int
     porcao_id:    Optional[int]
@@ -255,12 +261,6 @@ class ResponseItemPedidoSchema(BaseModel):
 
 # ==========================
 # PEDIDO  —  CRIAÇÃO PÚBLICA (sem login)
-#
-# Campos obrigatórios:
-#   nome_cliente, telefone, tipo_pedido
-#
-# Campos condicionais:
-#   endereco e bairro_id → obrigatórios se tipo_pedido == ENTREGA
 # ==========================
 class PedidoSchema(BaseModel):
     nome_cliente: str
@@ -269,9 +269,7 @@ class PedidoSchema(BaseModel):
     bairro_id:    Optional[int] = None
     tipo_pedido:  str
     observacoes:  Optional[str] = None
-
-    # usuario_id agora é OPCIONAL — pode ser preenchido pelo painel admin
-    id_usuario: Optional[int] = None
+    id_usuario:   Optional[int] = None
 
     @field_validator("nome_cliente")
     @classmethod
@@ -420,3 +418,20 @@ class ResponseVendasSchema(BaseModel):
     receita_total: float
     ticket_medio:  float
     por_pagamento: ResumoFormasPagamentoSchema
+
+
+# ==========================
+# UPLOAD DE IMAGEM (Cloudinary)
+# ==========================
+class ResponseUploadImagemSchema(BaseModel):
+    """Retorno padronizado após upload bem-sucedido."""
+    mensagem:   str
+    imagem_url: str
+
+
+# ==========================
+# REORDENAÇÃO DE CATEGORIAS
+# ==========================
+class ReordenarCategoriasSchema(BaseModel):
+    """Lista de IDs na nova ordem desejada. Ex: [3, 1, 2, 5]"""
+    ids: List[int]
