@@ -34,11 +34,11 @@ class TokenSchema(BaseModel):
 # CATEGORIA
 # ==========================
 class CategoriaSchema(BaseModel):
-    nome:      str
-    descricao: Optional[str]  = None
-    ativo:     Optional[bool] = True
-    # imagem_url e ordem são gerenciados por rotas dedicadas — não entram na criação direta
-    # mas podem ser passados caso o front queira
+    nome:       str
+    descricao:  Optional[str]  = None
+    ativo:      Optional[bool] = True
+    # imagem_url e ordem são gerenciados por rotas dedicadas
+    # mas aceitos aqui para compatibilidade com frontends que os enviam
     imagem_url: Optional[str] = None
     ordem:      Optional[int] = 0
 
@@ -48,8 +48,8 @@ class ResponseCategoriaSchema(BaseModel):
     nome:       str
     descricao:  Optional[str]
     ativo:      bool
-    imagem_url: Optional[str] = None   # ← NOVO
-    ordem:      int = 0                # ← NOVO
+    imagem_url: Optional[str] = None
+    ordem:      int = 0
 
     class Config:
         from_attributes = True
@@ -109,6 +109,43 @@ class ResponseVariacaoSchema(BaseModel):
 
 
 # ==========================
+# ADICIONAIS
+# ==========================
+class AdicionalSchema(BaseModel):
+    nome:       str
+    descricao:  Optional[str] = None
+    preco:      float = 0.0
+    ativo:      Optional[bool] = True
+    limite_qtd: Optional[int] = None
+
+    @field_validator("preco")
+    @classmethod
+    def preco_nao_negativo(cls, v):
+        if v < 0:
+            raise ValueError("Preço do adicional não pode ser negativo")
+        return v
+
+    @field_validator("limite_qtd")
+    @classmethod
+    def limite_positivo(cls, v):
+        if v is not None and v <= 0:
+            raise ValueError("limite_qtd deve ser maior que zero")
+        return v
+
+
+class ResponseAdicionalSchema(BaseModel):
+    id:         int
+    nome:       str
+    descricao:  Optional[str]
+    preco:      float
+    ativo:      bool
+    limite_qtd: Optional[int]
+
+    class Config:
+        from_attributes = True
+
+
+# ==========================
 # PRODUTO
 # ==========================
 class ProdutoSchema(BaseModel):
@@ -133,11 +170,12 @@ class ResponseProdutoSchema(BaseModel):
     nome:         str
     descricao:    Optional[str]
     preco:        float
-    imagem_url:   Optional[str]   # ← mantido (agora gerenciado pelo Cloudinary)
+    imagem_url:   Optional[str]
     disponivel:   bool
     categoria_id: int
     porcao_id:    Optional[int]
-    variacoes:    List[ResponseVariacaoSchema] = []
+    variacoes:    List[ResponseVariacaoSchema]  = []
+    adicionais:   List[ResponseAdicionalSchema] = []
 
     class Config:
         from_attributes = True
@@ -231,9 +269,9 @@ class ItemPedidoSchema(BaseModel):
     quantidade:     int
     nomedoproduto:  str
     preco_unitario: float
-    variacao_id:    Optional[int] = None
-    observacoes:    Optional[str] = None
-    adicionais_ids: Optional[List[int]] = []
+    variacao_id:    Optional[int]       = None
+    adicionais_ids: Optional[List[int]] = None
+    observacoes:    Optional[str]       = None
 
     @field_validator("quantidade")
     @classmethod
@@ -247,13 +285,15 @@ class ItemPedidoSchema(BaseModel):
 
 
 class ResponseItemPedidoSchema(BaseModel):
-    id:             int
-    quantidade:     int
-    nomedoproduto:  str
-    variacao_nome:  Optional[str]
-    preco_unitario: float
-    observacoes:    Optional[str]
-    subtotal:       float = 0.0
+    id:               int
+    quantidade:       int
+    nomedoproduto:    str
+    variacao_nome:    Optional[str]
+    preco_unitario:   float
+    adicionais_nomes: Optional[str] = None
+    adicionais_preco: float = 0.0
+    observacoes:      Optional[str]
+    subtotal:         float = 0.0
 
     class Config:
         from_attributes = True
@@ -433,5 +473,9 @@ class ResponseUploadImagemSchema(BaseModel):
 # REORDENAÇÃO DE CATEGORIAS
 # ==========================
 class ReordenarCategoriasSchema(BaseModel):
-    """Lista de IDs na nova ordem desejada. Ex: [3, 1, 2, 5]"""
+    """
+    Lista de IDs na nova ordem desejada.
+    Exemplo: {"ids": [3, 1, 2, 5]}
+    A posição na lista define o valor de `ordem` de cada categoria.
+    """
     ids: List[int]
