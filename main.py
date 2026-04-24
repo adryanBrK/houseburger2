@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import sessionmaker
 
 from models import Base, db, Usuario
+from image_routes import image_router
 
 from auth_routes         import auth_router
 from product_routes      import product_router
@@ -126,7 +127,7 @@ app.include_router(extras_router)
 app.include_router(impressora_router)
 app.include_router(cadastro_impressora_router)
 app.include_router(debug_impressora_router)
-
+app.include_router(image_router)
 
 @app.get("/", tags=["Status"])
 def raiz():
