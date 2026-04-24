@@ -166,8 +166,8 @@ class Produto(Base):
     categoria_id = Column(Integer, ForeignKey("categorias.id"), nullable=False)
     porcao_id    = Column(Integer, ForeignKey("porcoes.id"), nullable=True)
 
-    # ── NOVO CAMPO ────────────────────────────────────────────────
-    imagem_url = Column(String, nullable=True)   # URL Cloudinary (opcional)
+    # ── CAMPO IMAGEM ──────────────────────────────────────────────
+    imagem_url = Column(String, nullable=True)   # URL Cloudinary
     # ─────────────────────────────────────────────────────────────
 
     categoria  = relationship("Categoria", back_populates="produtos")
