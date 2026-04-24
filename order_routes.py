@@ -5,6 +5,8 @@ order_routes.py
   finalizar_pedido() agora chama _registrar_entrada() do caixa_routes
   dentro da mesma transação do pedido.
   Se o caixa falhar, o pedido inteiro faz rollback — consistência garantida.
+
+  + Rota PUT /categorias/reordenar adicionada.
 """
 
 import logging
@@ -18,6 +20,7 @@ from schemas import (
     PorcaoSchema, ResponsePorcaoSchema,
     PedidoSchema, ResponsePedidoSchema,
     ItemPedidoSchema, FinalizarPedidoSchema,
+    ReordenarCategoriasSchema,
 )
 from models import (
     Adicional, Categoria, Porcao, Pedido, ItemPedido, VariacaoProduto,
@@ -57,7 +60,7 @@ def _verificar_persistencia(pedido_id: int, session: Session) -> Pedido:
 
 @order_router.get("/categorias", response_model=List[ResponseCategoriaSchema], summary="Lista categorias")
 async def listar_categorias(session: Session = Depends(pegar_sessao)):
-    return session.query(Categoria).all()
+    return session.query(Categoria).order_by(Categoria.ordem.asc().nullslast(), Categoria.id.asc()).all()
 
 
 @order_router.post(
@@ -80,6 +83,29 @@ async def criar_categoria(
         session.rollback()
         raise HTTPException(status_code=400, detail="Categoria já existe")
     return nova
+
+
+@order_router.put(
+    "/categorias/reordenar",
+    summary="Reordena categorias (somente admin)",
+)
+async def reordenar_categorias(
+    dados:   ReordenarCategoriasSchema,
+    session: Session = Depends(pegar_sessao),
+    _:       Usuario = Depends(verificar_admin),
+):
+    for posicao, cat_id in enumerate(dados.ids):
+        cat = session.query(Categoria).filter(Categoria.id == cat_id).first()
+        if not cat:
+            raise HTTPException(status_code=404, detail=f"Categoria id={cat_id} não encontrada")
+        cat.ordem = posicao
+    try:
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        logger.error("Erro ao reordenar categorias: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Erro ao salvar nova ordem")
+    return {"mensagem": "Ordem salva com sucesso"}
 
 
 @order_router.put(
@@ -460,12 +486,10 @@ async def finalizar_pedido(
     dados:     FinalizarPedidoSchema,
     session:   Session = Depends(pegar_sessao),
 ):
-    # ── 1. Validações
     pedido = session.query(Pedido).filter(Pedido.id == pedido_id).first()
     if not pedido:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
 
-    # Proteção contra dupla finalização — retorna 400 em vez de corromper o caixa
     if pedido.status != StatusPedido.PENDENTE:
         raise HTTPException(
             status_code=400,
@@ -475,14 +499,10 @@ async def finalizar_pedido(
     if not pedido.itens:
         raise HTTPException(status_code=400, detail="Não é possível finalizar pedido sem itens")
 
-    # ── 2. Atualizar pedido
     pedido.status          = StatusPedido.FINALIZADO
     pedido.forma_pagamento = dados.forma_pagamento
     pedido.troco_para      = dados.troco_para
 
-    # ── 3. Registrar entrada no caixa (mesma transação)
-    # _registrar_entrada() usa session.flush() internamente — não faz commit.
-    # O commit único abaixo garante atomicidade: pedido + caixa ou nada.
     try:
         _registrar_entrada(
             session   = session,
@@ -498,7 +518,6 @@ async def finalizar_pedido(
         logger.error("Erro ao registrar entrada no caixa: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Erro ao atualizar caixa: {exc}")
 
-    # ── 4. Commit único — pedido + caixa + movimentação
     try:
         session.commit()
         session.refresh(pedido)
