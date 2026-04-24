@@ -1,13 +1,12 @@
 """
-main.py
-========
-Adição: delivery_router registrado em /delivery
-(alias para bairro_router, mesma lógica, prefixo diferente)
-Nada mais foi alterado.
+main.py v2.5.0
+===============
+Adições:
+  - image_router registrado (upload Cloudinary + reordenação de categorias)
+  - delivery_router mantido como alias de /Bairros
 """
 
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -15,21 +14,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import sessionmaker
 
 from models import Base, db, Usuario
-from image_routes import image_router
 
-from auth_routes         import auth_router
-from product_routes      import product_router
-from order_routes        import order_router
-from sales_routes        import sales_router
-from store_routes        import store_router
-from caixa_routes        import caixa_router
-from extras_routes       import extras_router
-from adicionais_routes   import adicionais_router   # ← ADICIONADO
-
-# bairro_router  → /Bairros/... (rota original — não alterar)
-# delivery_router → /delivery/... (alias — mesmo código)
-from bairro_routes import bairro_router, delivery_router
-
+from auth_routes       import auth_router
+from product_routes    import product_router
+from order_routes      import order_router
+from sales_routes      import sales_router
+from store_routes      import store_router
+from caixa_routes      import caixa_router
+from extras_routes     import extras_router
+from bairro_routes     import bairro_router, delivery_router
+from image_routes      import image_router          # ← NOVO
 from impressora_routes import (
     impressora_router,
     cadastro_impressora_router,
@@ -69,9 +63,9 @@ def _inicializar():
                 ativo = True,
             ))
             session.commit()
-            logger.info("Admin criado  ->  %s  /  admin123", admin_email)
+            logger.info("Admin criado -> %s / admin123", admin_email)
         else:
-            logger.info("Admin ja existe — nenhuma acao necessaria")
+            logger.info("Admin ja existe")
     except Exception as exc:
         session.rollback()
         logger.error("ERRO ao criar admin: %s", exc, exc_info=True)
@@ -81,21 +75,16 @@ def _inicializar():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Iniciando API Hamburgueria v2.4.0")
+    logger.info("Iniciando API Hamburgueria v2.5.0")
     _inicializar()
-    logger.info("API pronta para receber requisicoes")
+    logger.info("API pronta")
     yield
     logger.info("API encerrada")
 
 
 app = FastAPI(
-    title       = "API Hamburgueria",
-    description = (
-        "API completa para delivery de hamburgueria.\n\n"
-        "**Pedidos publicos:** clientes criam pedidos sem login via `POST /Pedidos/pedidos`.\n\n"
-        "**Painel admin:** autenticacao via `POST /auth/login`."
-    ),
-    version  = "2.4.0",
+    title    = "API Hamburgueria",
+    version  = "2.5.0",
     lifespan = lifespan,
 )
 
@@ -116,28 +105,27 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(product_router)
-app.include_router(adicionais_router)        # ← ADICIONADO (deve vir antes de order_router)
 app.include_router(order_router)
 app.include_router(sales_router)
 app.include_router(store_router)
-app.include_router(bairro_router)            # /Bairros/... — rota original
-app.include_router(delivery_router)          # /delivery/... — alias
+app.include_router(bairro_router)
+app.include_router(delivery_router)
 app.include_router(caixa_router)
 app.include_router(extras_router)
+app.include_router(image_router)               # ← NOVO
 app.include_router(impressora_router)
 app.include_router(cadastro_impressora_router)
 app.include_router(debug_impressora_router)
-app.include_router(image_router)
+
 
 @app.get("/", tags=["Status"])
 def raiz():
     db_url = str(db.url)
     return {
-        "status":  "online",
-        "message": "API Hamburgueria",
-        "versao":  "2.4.0",
-        "docs":    "/docs",
-        "banco":   "PostgreSQL" if "postgresql" in db_url else "SQLite",
+        "status": "online",
+        "versao": "2.5.0",
+        "docs":   "/docs",
+        "banco":  "PostgreSQL" if "postgresql" in db_url else "SQLite",
     }
 
 
