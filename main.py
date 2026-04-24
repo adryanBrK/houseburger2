@@ -1,20 +1,9 @@
-"""
-main.py v2.5.0
-===============
-Adições:
-  - image_router registrado (upload Cloudinary + reordenação de categorias)
-  - delivery_router mantido como alias de /Bairros
-"""
-
 import logging
 from contextlib import asynccontextmanager
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import sessionmaker
-
 from models import Base, db, Usuario
-
 from auth_routes       import auth_router
 from product_routes    import product_router
 from order_routes      import order_router
@@ -29,27 +18,22 @@ from impressora_routes import (
     cadastro_impressora_router,
     debug_impressora_router,
 )
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("main")
-
-
 def _inicializar():
     db_url     = str(db.url)
     tipo_banco = "PostgreSQL" if "postgresql" in db_url else "SQLite (apenas dev)"
     logger.info("Banco de dados: %s", tipo_banco)
-
     try:
         Base.metadata.create_all(bind=db)
         logger.info("Tabelas verificadas/criadas com sucesso")
     except Exception as exc:
         logger.error("ERRO ao criar tabelas: %s", exc, exc_info=True)
         raise
-
     session = sessionmaker(bind=db)()
     try:
         admin_email = "admin@hamburgueria.com"
@@ -71,8 +55,6 @@ def _inicializar():
         logger.error("ERRO ao criar admin: %s", exc, exc_info=True)
     finally:
         session.close()
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Iniciando API Hamburgueria v2.5.0")
@@ -80,14 +62,11 @@ async def lifespan(app: FastAPI):
     logger.info("API pronta")
     yield
     logger.info("API encerrada")
-
-
 app = FastAPI(
     title    = "API Hamburgueria",
     version  = "2.5.0",
     lifespan = lifespan,
 )
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -102,7 +81,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 app.include_router(auth_router)
 app.include_router(product_router)
 app.include_router(order_router)
@@ -112,12 +90,10 @@ app.include_router(bairro_router)
 app.include_router(delivery_router)
 app.include_router(caixa_router)
 app.include_router(extras_router)
-app.include_router(image_router)               # ← NOVO
+app.include_router(image_router)               # paths já incluem /Pedidos e /Produto internamente
 app.include_router(impressora_router)
 app.include_router(cadastro_impressora_router)
 app.include_router(debug_impressora_router)
-
-
 @app.get("/", tags=["Status"])
 def raiz():
     db_url = str(db.url)
@@ -127,11 +103,7 @@ def raiz():
         "docs":   "/docs",
         "banco":  "PostgreSQL" if "postgresql" in db_url else "SQLite",
     }
-
-
 @app.get("/health", tags=["Status"])
 def health_check():
     return {"status": "healthy"}
-
-
 handler = app
