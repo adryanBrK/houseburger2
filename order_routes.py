@@ -1,12 +1,14 @@
 """
-order_routes.py
-================
-Única mudança em relação à versão anterior:
-  finalizar_pedido() agora chama _registrar_entrada() do caixa_routes
-  dentro da mesma transação do pedido.
-  Se o caixa falhar, o pedido inteiro faz rollback — consistência garantida.
+order_routes.py — REFATORADO
+==============================
+O router agora é apenas um controlador HTTP:
+  - Valida entrada (via schemas/Pydantic)
+  - Chama o service
+  - Traduz exceções de domínio em HTTPException
+  - Devolve a resposta
 
-  + Rota PUT /categorias/reordenar adicionada.
+Zero lógica de negócio aqui.
+Zero imports de outros routers.
 """
 
 import logging
@@ -22,45 +24,58 @@ from schemas import (
     ItemPedidoSchema, FinalizarPedidoSchema,
     ReordenarCategoriasSchema,
 )
-from models import (
-    Adicional, Categoria, Porcao, Pedido, ItemPedido, VariacaoProduto,
-    Bairro, Usuario, StatusPedido,
+from models import Categoria, Porcao, Pedido, ItemPedido, Usuario, StatusPedido
+import services_pedido_service as pedido_svc
+from services_pedido_service import (
+    PedidoNaoEncontradoError,
+    PedidoStatusInvalidoError,
+    PedidoSemItensError,
+    ProdutoIndisponivelError,
+    VariacaoIndisponivelError,
+    AdicionalInativoError,
+    PedidoError,
 )
-# Importa o helper do caixa — mesma transação, sem acoplamento de router
-from caixa_routes import _registrar_entrada
 
-logger = logging.getLogger("order_routes")
-logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(name)s | %(message)s")
-
+log = logging.getLogger("order_routes")
 order_router = APIRouter(prefix="/Pedidos", tags=["Pedidos"])
 
 
-def _gerar_codigo(pedido_id: int) -> str:
-    return str(1000 + pedido_id)
+# ══════════════════════════════════════════════════════════════════
+# TRADUTOR DE EXCEÇÕES
+# Centraliza o mapeamento domínio → HTTP para não repetir em cada rota.
+# ══════════════════════════════════════════════════════════════════
+
+def _traduzir(exc: Exception) -> HTTPException:
+    """Converte exceção de domínio em HTTPException com código correto."""
+    if isinstance(exc, PedidoNaoEncontradoError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, (PedidoStatusInvalidoError, PedidoSemItensError)):
+        return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, (ProdutoIndisponivelError, VariacaoIndisponivelError, AdicionalInativoError)):
+        return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, PedidoError):
+        return HTTPException(status_code=400, detail=str(exc))
+    # Erro inesperado — loga e retorna 500
+    log.error("[order_routes] Erro inesperado: %s", exc, exc_info=True)
+    return HTTPException(status_code=500, detail="Erro interno — tente novamente")
 
 
-def _verificar_persistencia(pedido_id: int, session: Session) -> Pedido:
-    pedido_salvo = session.query(Pedido).filter(Pedido.id == pedido_id).first()
-    if not pedido_salvo:
-        logger.error("FALHA DE PERSISTÊNCIA — pedido %s não encontrado após commit", pedido_id)
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Pedido criado mas não confirmado no banco de dados. "
-                "Verifique a conexão com o PostgreSQL e tente novamente."
-            ),
-        )
-    logger.info("Persistência confirmada — pedido #%s (id=%s)", pedido_salvo.codigo, pedido_id)
-    return pedido_salvo
-
-
-# ============================================================
+# ══════════════════════════════════════════════════════════════════
 # CATEGORIAS
-# ============================================================
+# ══════════════════════════════════════════════════════════════════
 
-@order_router.get("/categorias", response_model=List[ResponseCategoriaSchema], summary="Lista categorias")
+@order_router.get(
+    "/categorias",
+    response_model=List[ResponseCategoriaSchema],
+    summary="Lista categorias ordenadas (público)",
+)
 async def listar_categorias(session: Session = Depends(pegar_sessao)):
-    return session.query(Categoria).order_by(Categoria.ordem.asc().nullslast(), Categoria.id.asc()).all()
+    # order_by garante a ordem do drag-and-drop do front
+    return (
+        session.query(Categoria)
+        .order_by(Categoria.ordem.asc(), Categoria.id.asc())
+        .all()
+    )
 
 
 @order_router.post(
@@ -74,7 +89,12 @@ async def criar_categoria(
     session: Session  = Depends(pegar_sessao),
     _:       Usuario  = Depends(verificar_admin),
 ):
-    nova = Categoria(nome=dados.nome, descricao=dados.descricao)
+    nova = Categoria(
+        nome       = dados.nome,
+        descricao  = dados.descricao,
+        imagem_url = dados.imagem_url,
+        ordem      = dados.ordem if dados.ordem is not None else 0,
+    )
     session.add(nova)
     try:
         session.commit()
@@ -83,29 +103,6 @@ async def criar_categoria(
         session.rollback()
         raise HTTPException(status_code=400, detail="Categoria já existe")
     return nova
-
-
-@order_router.put(
-    "/categorias/reordenar",
-    summary="Reordena categorias (somente admin)",
-)
-async def reordenar_categorias(
-    dados:   ReordenarCategoriasSchema,
-    session: Session = Depends(pegar_sessao),
-    _:       Usuario = Depends(verificar_admin),
-):
-    for posicao, cat_id in enumerate(dados.ids):
-        cat = session.query(Categoria).filter(Categoria.id == cat_id).first()
-        if not cat:
-            raise HTTPException(status_code=404, detail=f"Categoria id={cat_id} não encontrada")
-        cat.ordem = posicao
-    try:
-        session.commit()
-    except Exception as exc:
-        session.rollback()
-        logger.error("Erro ao reordenar categorias: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail="Erro ao salvar nova ordem")
-    return {"mensagem": "Ordem salva com sucesso"}
 
 
 @order_router.put(
@@ -122,10 +119,14 @@ async def editar_categoria(
     cat = session.query(Categoria).filter(Categoria.id == categoria_id).first()
     if not cat:
         raise HTTPException(status_code=404, detail="Categoria não encontrada")
-    cat.nome = dados.nome
+    cat.nome      = dados.nome
     cat.descricao = dados.descricao
     if dados.ativo is not None:
         cat.ativo = dados.ativo
+    if dados.imagem_url is not None:
+        cat.imagem_url = dados.imagem_url
+    if dados.ordem is not None:
+        cat.ordem = dados.ordem
     session.commit()
     session.refresh(cat)
     return cat
@@ -145,9 +146,53 @@ async def deletar_categoria(
     return {"mensagem": "Categoria removida com sucesso"}
 
 
-# ============================================================
+@order_router.put(
+    "/categorias/reordenar",
+    response_model=List[ResponseCategoriaSchema],
+    summary="Reordena categorias por drag-and-drop (admin)",
+)
+async def reordenar_categorias(
+    dados:   ReordenarCategoriasSchema,
+    session: Session = Depends(pegar_sessao),
+    _:       Usuario = Depends(verificar_admin),
+):
+    """
+    Recebe lista de IDs na nova ordem: {"ids": [3, 1, 2, 5]}
+    Categoria com id=3 recebe ordem=0, id=1 → ordem=1, etc.
+    IDs inexistentes são ignorados silenciosamente.
+    """
+    if not dados.ids:
+        return (
+            session.query(Categoria)
+            .order_by(Categoria.ordem.asc())
+            .all()
+        )
+
+    for posicao, cat_id in enumerate(dados.ids):
+        cat = session.query(Categoria).filter(Categoria.id == cat_id).first()
+        if cat is None:
+            log.warning("reordenar_categorias: id=%s não encontrado — ignorado", cat_id)
+            continue
+        cat.ordem = posicao
+
+    try:
+        session.commit()
+        log.info("Categorias reordenadas: %s", dados.ids)
+    except Exception as exc:
+        session.rollback()
+        log.error("Erro ao salvar ordem: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Falha ao salvar a nova ordem: {exc}")
+
+    return (
+        session.query(Categoria)
+        .order_by(Categoria.ordem.asc())
+        .all()
+    )
+
+
+# ══════════════════════════════════════════════════════════════════
 # PORÇÕES
-# ============================================================
+# ══════════════════════════════════════════════════════════════════
 
 @order_router.get("/porcoes", response_model=List[ResponsePorcaoSchema], summary="Lista porções")
 async def listar_porcoes(session: Session = Depends(pegar_sessao)):
@@ -211,66 +256,35 @@ async def deletar_porcao(
     return {"mensagem": "Porção removida com sucesso"}
 
 
-# ============================================================
-# PEDIDOS — CRIAÇÃO PÚBLICA (sem login)
-# ============================================================
+# ══════════════════════════════════════════════════════════════════
+# PEDIDOS
+# ══════════════════════════════════════════════════════════════════
 
 @order_router.post(
     "/pedidos",
     response_model=ResponsePedidoSchema,
     status_code=status.HTTP_201_CREATED,
-    summary="Cria um novo pedido (público — sem necessidade de login)",
+    summary="Cria pedido (público — sem login)",
 )
 async def criar_pedido(
     dados:   PedidoSchema,
     session: Session = Depends(pegar_sessao),
 ):
-    logger.info(
-        "Novo pedido recebido | cliente: %s | tipo: %s",
-        dados.nome_cliente, dados.tipo_pedido,
-    )
-
-    valor_entrega = 0.0
-    if dados.bairro_id:
-        bairro = session.query(Bairro).filter(
-            Bairro.id == dados.bairro_id, Bairro.ativo == True
-        ).first()
-        if not bairro:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Bairro id={dados.bairro_id} não encontrado ou inativo",
-            )
-        valor_entrega = bairro.valor_entrega
-
-    pedido = Pedido(
-        nome_cliente  = dados.nome_cliente.strip(),
-        telefone      = dados.telefone.strip(),
-        endereco      = dados.endereco.strip() if dados.endereco else None,
-        tipo_pedido   = dados.tipo_pedido,
-        bairro_id     = dados.bairro_id,
-        valor_entrega = valor_entrega,
-        observacoes   = dados.observacoes,
-        status        = StatusPedido.PENDENTE,
-        usuario_id    = dados.id_usuario,
-    )
-
     try:
-        session.add(pedido)
-        session.flush()
-        pedido.codigo = _gerar_codigo(pedido.id)
-        session.commit()
-        logger.info("Commit realizado | id=%s | codigo=%s", pedido.id, pedido.codigo)
+        pedido = pedido_svc.criar_pedido(
+            session      = session,
+            nome_cliente = dados.nome_cliente,
+            telefone     = dados.telefone,
+            tipo_pedido  = dados.tipo_pedido,
+            bairro_id    = dados.bairro_id,
+            endereco     = dados.endereco,
+            observacoes  = dados.observacoes,
+            usuario_id   = dados.id_usuario,
+        )
+        return pedido
     except Exception as exc:
-        session.rollback()
-        logger.error("Erro ao criar pedido: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Erro interno ao salvar pedido: {str(exc)}")
+        raise _traduzir(exc)
 
-    return _verificar_persistencia(pedido.id, session)
-
-
-# ============================================================
-# PEDIDOS — ADMIN
-# ============================================================
 
 @order_router.get(
     "/listar",
@@ -278,11 +292,11 @@ async def criar_pedido(
     summary="Lista todos os pedidos (somente admin)",
 )
 async def listar_todos_pedidos(
-    status_filtro:    Optional[str] = None,
-    forma_pagamento:  Optional[str] = None,
-    tipo_pedido:      Optional[str] = None,
-    session: Session  = Depends(pegar_sessao),
-    _:       Usuario  = Depends(verificar_admin),
+    status_filtro:   Optional[str] = None,
+    forma_pagamento: Optional[str] = None,
+    tipo_pedido:     Optional[str] = None,
+    session: Session = Depends(pegar_sessao),
+    _:       Usuario = Depends(verificar_admin),
 ):
     q = session.query(Pedido)
     if status_filtro:
@@ -297,7 +311,7 @@ async def listar_todos_pedidos(
 @order_router.get(
     "/meus-pedidos",
     response_model=List[ResponsePedidoSchema],
-    summary="Lista os pedidos do usuário logado",
+    summary="Lista pedidos do usuário logado",
 )
 async def listar_meus_pedidos(
     session: Session = Depends(pegar_sessao),
@@ -314,7 +328,7 @@ async def listar_meus_pedidos(
 @order_router.get(
     "/pedido/{pedido_id}",
     response_model=ResponsePedidoSchema,
-    summary="Visualiza um pedido (admin ou dono)",
+    summary="Visualiza pedido (admin ou dono)",
 )
 async def visualizar_pedido(
     pedido_id: int,
@@ -332,7 +346,7 @@ async def visualizar_pedido(
 @order_router.get(
     "/buscar/{codigo}",
     response_model=ResponsePedidoSchema,
-    summary="Busca pedido pelo código (ex: 1023) — público",
+    summary="Busca pedido por código — público",
 )
 async def buscar_pedido_por_codigo(
     codigo:  str,
@@ -344,232 +358,117 @@ async def buscar_pedido_por_codigo(
     return pedido
 
 
-# ============================================================
-# ITENS DO PEDIDO — público (cliente não tem login)
-# ============================================================
+# ══════════════════════════════════════════════════════════════════
+# ITENS
+# ══════════════════════════════════════════════════════════════════
 
 @order_router.post(
     "/pedido/adicionar-item/{pedido_id}",
-    summary="Adiciona item ao pedido com suporte a adicionais (público)",
+    summary="Adiciona item ao pedido (público)",
 )
 async def adicionar_item(
     pedido_id: int,
     dados:     ItemPedidoSchema,
     session:   Session = Depends(pegar_sessao),
 ):
-    pedido = session.query(Pedido).filter(Pedido.id == pedido_id).first()
-    if not pedido:
-        raise HTTPException(status_code=404, detail="Pedido não encontrado")
-    if pedido.status != StatusPedido.PENDENTE:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Pedido já está {pedido.status} — não é possível adicionar itens",
+    """
+    Preço lido do banco (Produto.preco + VariacaoProduto.acrescimo).
+    O campo preco_unitario no schema ainda existe por compatibilidade,
+    mas é IGNORADO — o service busca o preço real do banco.
+    """
+    try:
+        item = pedido_svc.adicionar_item(
+            session        = session,
+            pedido_id      = pedido_id,
+            produto_id     = dados.produto_id,
+            quantidade     = dados.quantidade,
+            variacao_id    = dados.variacao_id,
+            adicionais_ids = dados.adicionais_ids or [],
+            observacoes    = dados.observacoes,
         )
-
-    variacao_nome  = None
-    preco_unitario = dados.preco_unitario
-
-    if dados.variacao_id is not None:
-        variacao = session.query(VariacaoProduto).filter(
-            VariacaoProduto.id == dados.variacao_id
-        ).first()
-        if not variacao:
-            raise HTTPException(status_code=404, detail="Variação não encontrada")
-        if not variacao.disponivel:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Variação '{variacao.nome}' está indisponível",
-            )
-        variacao_nome  = variacao.nome
-        preco_unitario = dados.preco_unitario + variacao.acrescimo
-
-    adicionais_nomes = None
-    adicionais_preco = 0.0
-
-    if dados.adicionais_ids:
-        nomes_lista = []
-        for aid in dados.adicionais_ids:
-            adicional = session.query(Adicional).filter(Adicional.id == aid).first()
-            if not adicional:
-                raise HTTPException(status_code=404, detail=f"Adicional id={aid} não encontrado")
-            if not adicional.ativo:
-                raise HTTPException(status_code=400, detail=f"Adicional '{adicional.nome}' está inativo")
-            nomes_lista.append(adicional.nome)
-            adicionais_preco += adicional.preco
-        adicionais_nomes = ", ".join(nomes_lista)
-
-    item = ItemPedido(
-        quantidade       = dados.quantidade,
-        nomedoproduto    = dados.nomedoproduto,
-        variacao_nome    = variacao_nome,
-        preco_unitario   = preco_unitario,
-        adicionais_nomes = adicionais_nomes,
-        adicionais_preco = adicionais_preco,
-        observacoes      = dados.observacoes,
-        pedido_id        = pedido_id,
-    )
-    session.add(item)
-    session.flush()
-
-    subtotal_itens = sum(
-        (i.preco_unitario + i.adicionais_preco) * i.quantidade
-        for i in pedido.itens
-    )
-    pedido.preco_total = subtotal_itens + pedido.valor_entrega
-
-    session.commit()
-    session.refresh(item)
-
-    logger.info(
-        "Item adicionado | pedido=%s | produto=%s | qty=%s | unitario=%.2f | adicionais=%.2f",
-        pedido_id, dados.nomedoproduto, dados.quantidade, preco_unitario, adicionais_preco,
-    )
-
-    return {
-        "mensagem":         "Item adicionado com sucesso",
-        "item_id":          item.id,
-        "variacao":         variacao_nome,
-        "adicionais":       adicionais_nomes,
-        "preco_unitario":   preco_unitario,
-        "adicionais_preco": adicionais_preco,
-        "preco_total":      pedido.preco_total,
-    }
+        pedido = item.pedido
+        return {
+            "mensagem":         "Item adicionado com sucesso",
+            "item_id":          item.id,
+            "produto":          item.nomedoproduto,
+            "variacao":         item.variacao_nome,
+            "adicionais":       item.adicionais_nomes,
+            "preco_unitario":   item.preco_unitario,
+            "adicionais_preco": item.adicionais_preco,
+            "preco_total":      pedido.preco_total,
+        }
+    except Exception as exc:
+        raise _traduzir(exc)
 
 
 @order_router.delete(
     "/pedido/remover-item/{item_id}",
-    summary="Remove um item do pedido (admin)",
+    summary="Remove item do pedido",
 )
 async def remover_item(
     item_id: int,
     session: Session = Depends(pegar_sessao),
     usuario: Usuario = Depends(verificar_token),
 ):
-    item = session.query(ItemPedido).filter(ItemPedido.id == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item não encontrado")
-
-    pedido = item.pedido
-    if not usuario.admin and usuario.id != pedido.usuario_id:
-        raise HTTPException(status_code=403, detail="Acesso negado")
-    if pedido.status != StatusPedido.PENDENTE:
-        raise HTTPException(status_code=400, detail=f"Pedido já está {pedido.status}")
-
-    session.delete(item)
-    session.flush()
-
-    subtotal_itens = sum(
-        (i.preco_unitario + i.adicionais_preco) * i.quantidade
-        for i in pedido.itens
-    )
-    pedido.preco_total = subtotal_itens + pedido.valor_entrega
-    session.commit()
-
-    return {
-        "mensagem":    "Item removido com sucesso",
-        "preco_total": pedido.preco_total,
-        "itens":       len(pedido.itens),
-    }
+    try:
+        return pedido_svc.remover_item(
+            session    = session,
+            item_id    = item_id,
+            usuario_id = usuario.id,
+            is_admin   = usuario.admin,
+        )
+    except Exception as exc:
+        raise _traduzir(exc)
 
 
-# ============================================================
-# FINALIZAR  —  integrado com o caixa
-# ============================================================
+# ══════════════════════════════════════════════════════════════════
+# FINALIZAR / CANCELAR
+# ══════════════════════════════════════════════════════════════════
 
 @order_router.post(
     "/pedido/finalizar/{pedido_id}",
     response_model=ResponsePedidoSchema,
-    summary="Finaliza o pedido e registra entrada no caixa automaticamente (público)",
+    summary="Finaliza pedido e registra no caixa (público)",
 )
 async def finalizar_pedido(
     pedido_id: int,
     dados:     FinalizarPedidoSchema,
     session:   Session = Depends(pegar_sessao),
 ):
-    pedido = session.query(Pedido).filter(Pedido.id == pedido_id).first()
-    if not pedido:
-        raise HTTPException(status_code=404, detail="Pedido não encontrado")
-
-    if pedido.status != StatusPedido.PENDENTE:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Pedido já está {pedido.status} — não é possível finalizar novamente",
-        )
-
-    if not pedido.itens:
-        raise HTTPException(status_code=400, detail="Não é possível finalizar pedido sem itens")
-
-    pedido.status          = StatusPedido.FINALIZADO
-    pedido.forma_pagamento = dados.forma_pagamento
-    pedido.troco_para      = dados.troco_para
-
     try:
-        _registrar_entrada(
-            session   = session,
-            valor     = pedido.preco_total,
-            descricao = f"Pedido #{pedido.codigo} | {pedido.forma_pagamento}",
-            pedido_id = pedido.id,
+        return pedido_svc.finalizar_pedido(
+            session         = session,
+            pedido_id       = pedido_id,
+            forma_pagamento = dados.forma_pagamento,
+            troco_para      = dados.troco_para,
         )
-    except ValueError as exc:
-        session.rollback()
-        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        session.rollback()
-        logger.error("Erro ao registrar entrada no caixa: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Erro ao atualizar caixa: {exc}")
+        raise _traduzir(exc)
 
-    try:
-        session.commit()
-        session.refresh(pedido)
-    except Exception as exc:
-        session.rollback()
-        logger.error("Erro ao finalizar pedido: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Erro ao finalizar pedido: {exc}")
-
-    logger.info(
-        "Pedido finalizado | id=%s | pagamento=%s | total=R$ %.2f",
-        pedido.id, pedido.forma_pagamento, pedido.preco_total,
-    )
-    return pedido
-
-
-# ============================================================
-# CANCELAR  (somente admin)
-# ============================================================
 
 @order_router.post(
     "/pedido/cancelar/{pedido_id}",
     response_model=ResponsePedidoSchema,
-    summary="Cancela um pedido (somente admin)",
+    summary="Cancela pedido (somente admin)",
 )
 async def cancelar_pedido(
     pedido_id: int,
     session:   Session = Depends(pegar_sessao),
     _:         Usuario = Depends(verificar_admin),
 ):
-    pedido = session.query(Pedido).filter(Pedido.id == pedido_id).first()
-    if not pedido:
-        raise HTTPException(status_code=404, detail="Pedido não encontrado")
-    if pedido.status == StatusPedido.CANCELADO:
-        raise HTTPException(status_code=400, detail="Pedido já está cancelado")
-    if pedido.status == StatusPedido.FINALIZADO:
-        raise HTTPException(status_code=400, detail="Pedido finalizado não pode ser cancelado")
-
-    pedido.status = StatusPedido.CANCELADO
-    session.commit()
-    session.refresh(pedido)
-
-    logger.info("Pedido cancelado | id=%s", pedido.id)
-    return pedido
+    try:
+        return pedido_svc.cancelar_pedido(session, pedido_id)
+    except Exception as exc:
+        raise _traduzir(exc)
 
 
-# ============================================================
-# DEBUG — somente admin
-# ============================================================
+# ══════════════════════════════════════════════════════════════════
+# DEBUG
+# ══════════════════════════════════════════════════════════════════
 
 @order_router.get(
     "/debug/pedidos",
-    summary="[DEBUG] Verifica persistência — total e últimos 5 pedidos (somente admin)",
+    summary="[DEBUG] Persistência e últimos 5 pedidos (somente admin)",
     tags=["Debug"],
 )
 async def debug_pedidos(
@@ -583,7 +482,6 @@ async def debug_pedidos(
         .limit(5)
         .all()
     )
-
     return {
         "banco":         "PostgreSQL" if "postgresql" in str(session.bind.url) else "SQLite",
         "total_pedidos": total,
