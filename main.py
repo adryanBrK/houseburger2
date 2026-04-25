@@ -13,6 +13,7 @@ from caixa_routes      import caixa_router
 from extras_routes     import extras_router
 from bairro_routes     import bairro_router, delivery_router
 from image_routes      import image_router          # ← NOVO
+from adicionais_routes import adicionais_router
 from impressora_routes import (
     impressora_router,
     cadastro_impressora_router,
@@ -84,6 +85,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(product_router)
 app.include_router(order_router)
+app.include_router(adicionais_router)
 app.include_router(sales_router)
 app.include_router(store_router)
 app.include_router(bairro_router)
