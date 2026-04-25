@@ -1,21 +1,3 @@
-"""
-adicionais_routes.py
-====================
-
-Rotas de adicionais POR PRODUTO.
-
-Prefixo: /Produto
-
-Rotas:
-  GET    /Produto/produtos/{produto_id}/adicionais
-  POST   /Produto/produtos/{produto_id}/adicionais
-  DELETE /Produto/produtos/{produto_id}/adicionais/{adicional_id}
-"""
-
-# ============================================================
-# IMPORTS
-# ============================================================
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey
@@ -26,36 +8,26 @@ from dependencias import pegar_sessao, verificar_admin
 from models import Base, Produto, Usuario
 
 
-# ============================================================
-# ROUTER
-# ============================================================
-
 adicionais_router = APIRouter(
     prefix="/Produto",
     tags=["Adicionais por Produto"]
 )
 
 
-# ============================================================
-# MODEL — ProdutoAdicional
-# ============================================================
-
+# MODEL
 class ProdutoAdicional(Base):
     __tablename__ = "produto_adicionais"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    produto_id = Column(Integer, ForeignKey("produtos.id", ondelete="CASCADE"), nullable=False)
+    id = Column(Integer, primary_key=True, index=True)
+    produto_id = Column(Integer, ForeignKey("produtos.id", ondelete="CASCADE"))
 
     nome = Column(String, nullable=False)
-    descricao = Column(String, nullable=True)
+    descricao = Column(String)
     preco = Column(Float, nullable=False)
     disponivel = Column(Boolean, default=True)
 
 
-# ============================================================
-# SCHEMAS
-# ============================================================
-
+# SCHEMA
 class AdicionalSchema(BaseModel):
     nome: str
     preco: float
@@ -75,52 +47,35 @@ class ResponseAdicionalSchema(BaseModel):
         from_attributes = True
 
 
-# ============================================================
-# HELPERS
-# ============================================================
-
-def _get_produto(produto_id: int, session: Session) -> Produto:
+# HELPER
+def _get_produto(produto_id: int, session: Session):
     produto = session.query(Produto).filter(Produto.id == produto_id).first()
-
     if not produto:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
-
     return produto
 
 
-# ============================================================
-# ROTAS
-# ============================================================
-
+# GET
 @adicionais_router.get(
     "/produtos/{produto_id}/adicionais",
-    response_model=List[ResponseAdicionalSchema],
-    summary="Lista adicionais de um produto"
+    response_model=List[ResponseAdicionalSchema]
 )
-async def listar_adicionais(
-    produto_id: int,
-    apenas_disponiveis: bool = True,
-    session: Session = Depends(pegar_sessao)
-):
+def listar_adicionais(produto_id: int, session: Session = Depends(pegar_sessao)):
     _get_produto(produto_id, session)
 
-    query = session.query(ProdutoAdicional).filter(
-        ProdutoAdicional.produto_id == produto_id
-    )
-
-    if apenas_disponiveis:
-        query = query.filter(ProdutoAdicional.disponivel == True)
-
-    return query.all()
+    return session.query(ProdutoAdicional).filter(
+        ProdutoAdicional.produto_id == produto_id,
+        ProdutoAdicional.disponivel == True
+    ).all()
 
 
+# POST
 @adicionais_router.post(
     "/produtos/{produto_id}/adicionais",
     response_model=ResponseAdicionalSchema,
-    status_code=status.HTTP_201_CREATED,
-    summary="Adiciona um adicional ao produto (admin)"
+    status_code=201
 )
-async def criar_adicional(
+def criar_adicional(
     produto_id: int,
     dados: AdicionalSchema,
     session: Session = Depends(pegar_sessao),
@@ -133,7 +88,7 @@ async def criar_adicional(
         nome=dados.nome,
         descricao=dados.descricao,
         preco=dados.preco,
-        disponivel=dados.disponivel if dados.disponivel is not None else True
+        disponivel=dados.disponivel
     )
 
     session.add(adicional)
@@ -143,18 +98,16 @@ async def criar_adicional(
     return adicional
 
 
+# DELETE
 @adicionais_router.delete(
-    "/produtos/{produto_id}/adicionais/{adicional_id}",
-    summary="Remove um adicional do produto (admin)"
+    "/produtos/{produto_id}/adicionais/{adicional_id}"
 )
-async def deletar_adicional(
+def deletar_adicional(
     produto_id: int,
     adicional_id: int,
     session: Session = Depends(pegar_sessao),
     _: Usuario = Depends(verificar_admin)
 ):
-    _get_produto(produto_id, session)
-
     adicional = session.query(ProdutoAdicional).filter(
         ProdutoAdicional.id == adicional_id,
         ProdutoAdicional.produto_id == produto_id
@@ -166,6 +119,4 @@ async def deletar_adicional(
     session.delete(adicional)
     session.commit()
 
-    return {
-        "mensagem": f"Adicional '{adicional.nome}' removido do produto"
-    }
+    return {"mensagem": "Adicional removido"}
