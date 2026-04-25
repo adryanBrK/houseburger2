@@ -220,16 +220,16 @@ async def caixa_por_data(
     caixa = session.query(Caixa).filter(Caixa.data == dia).first()
     if not caixa:
         if not caixa:
-    return {
-        "id": 0,
-        "data": dia,
-        "caixa_inicial": 0.0,
-        "entradas": 0.0,
-        "saidas": 0.0,
-        "saldo_atual": 0.0,
-        "criado_em": datetime.now(timezone.utc),
-        "movimentacoes": [],
-    }
+            return {
+                "id": 0,
+                "data": dia,
+                "caixa_inicial": 0.0,
+                "entradas": 0.0,
+                "saidas": 0.0,
+                "saldo_atual": 0.0,
+                "criado_em": datetime.now(timezone.utc),
+                "movimentacoes": [],
+            }
     return caixa
 
 
