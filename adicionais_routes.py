@@ -1,163 +1,192 @@
 """
-adicionais_routes.py
+adicional_routes.py
 ====================
-Rotas de adicionais POR PRODUTO.
+Cria as rotas que estavam faltando:
 
-Prefixo: /Produto  (registrado no mesmo router de produtos)
-
-Rotas geradas:
   GET    /Produto/produtos/{produto_id}/adicionais
   POST   /Produto/produtos/{produto_id}/adicionais
   DELETE /Produto/produtos/{produto_id}/adicionais/{adicional_id}
 
-O front-end (adm.html e index.html) chama exatamente essas URLs.
+No main.py, adicione:
+
+    from adicional_routes import adicional_router
+    app.include_router(adicional_router)
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey
+import logging
+from datetime import datetime, timezone
 from typing import List, Optional
-from pydantic import BaseModel
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, field_validator
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy.orm import Session, relationship
 
 from dependencias import pegar_sessao, verificar_admin
 from models import Base, Produto, Usuario
 
-adicionais_router = APIRouter(prefix="/Produto", tags=["Adicionais por Produto"])
+log = logging.getLogger("adicional_routes")
 
 
-# ══════════════════════════════════════════════════════════════
-# MODEL — tabela produto_adicionais
-# ══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
+# MODEL
+# ══════════════════════════════════════════════════════════════════
 
-class ProdutoAdicional(Base):
-    """Adicional vinculado a um produto específico."""
-    __tablename__ = "produto_adicionais"
+class Adicional(Base):
+    __tablename__ = "adicionais"
 
-    id          = Column(Integer, primary_key=True, autoincrement=True)
-    produto_id  = Column(Integer, ForeignKey("produtos.id", ondelete="CASCADE"), nullable=False)
-    nome        = Column(String, nullable=False)
-    descricao   = Column(String, nullable=True)
-    preco       = Column(Float, nullable=False)
-    disponivel  = Column(Boolean, default=True)
+    id         = Column(Integer, primary_key=True, index=True)
+    produto_id = Column(Integer, ForeignKey("produtos.id", ondelete="CASCADE"), nullable=False, index=True)
+    nome       = Column(String(120), nullable=False)
+    preco      = Column(Float, nullable=False, default=0.0)
+    descricao  = Column(String(255), nullable=True)
+    disponivel = Column(Boolean, nullable=False, default=True)
+    criado_em  = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    produto = relationship("Produto", back_populates="adicionais")
 
 
-# ══════════════════════════════════════════════════════════════
+# Injeta o relacionamento inverso em Produto sem editar models.py
+if not hasattr(Produto, "adicionais"):
+    Produto.adicionais = relationship(
+        "Adicional",
+        back_populates="produto",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
+
+
+# ══════════════════════════════════════════════════════════════════
 # SCHEMAS
-# ══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 
-class AdicionalSchema(BaseModel):
+class AdicionalCreateSchema(BaseModel):
     nome:       str
-    preco:      float
+    preco:      float = 0.0
     descricao:  Optional[str] = None
-    disponivel: Optional[bool] = True
+    disponivel: bool = True
+
+    @field_validator("nome")
+    @classmethod
+    def nome_nao_vazio(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("nome e obrigatorio")
+        return v
+
+    @field_validator("preco")
+    @classmethod
+    def preco_nao_negativo(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("preco nao pode ser negativo")
+        return v
 
 
-class ResponseAdicionalSchema(BaseModel):
+class AdicionalResponseSchema(BaseModel):
     id:         int
     produto_id: int
     nome:       str
-    descricao:  Optional[str]
     preco:      float
+    descricao:  Optional[str]
     disponivel: bool
+    criado_em:  datetime
 
     class Config:
         from_attributes = True
 
 
-# ══════════════════════════════════════════════════════════════
-# HELPER
-# ══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
+# ROUTER
+# ══════════════════════════════════════════════════════════════════
 
-def _get_produto(produto_id: int, session: Session) -> Produto:
-    p = session.query(Produto).filter(Produto.id == produto_id).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Produto não encontrado")
-    return p
+adicional_router = APIRouter(prefix="/Produto", tags=["Adicionais"])
 
 
-# ══════════════════════════════════════════════════════════════
-# ROTAS
-# ══════════════════════════════════════════════════════════════
+def _produto_ou_404(session: Session, produto_id: int) -> Produto:
+    produto = session.query(Produto).filter(Produto.id == produto_id).first()
+    if not produto:
+        raise HTTPException(status_code=404, detail=f"Produto id={produto_id} nao encontrado.")
+    return produto
 
-@adicionais_router.get(
+
+@adicional_router.get(
     "/produtos/{produto_id}/adicionais",
-    response_model=List[ResponseAdicionalSchema],
-    summary="Lista adicionais de um produto"
+    response_model=List[AdicionalResponseSchema],
+    summary="Lista adicionais de um produto (admin)",
 )
-async def listar_adicionais(
+def listar_adicionais(
     produto_id: int,
-    apenas_disponiveis: bool = True,
-    session: Session = Depends(pegar_sessao)
-):
-    """
-    Retorna todos os adicionais vinculados ao produto.
-    Usado pelo index.html (cardápio público) e adm.html.
-    """
-    _get_produto(produto_id, session)  # garante 404 se produto não existe
-
-    q = session.query(ProdutoAdicional).filter(
-        ProdutoAdicional.produto_id == produto_id
-    )
-    if apenas_disponiveis:
-        q = q.filter(ProdutoAdicional.disponivel == True)
-    return q.all()
-
-
-@adicionais_router.post(
-    "/produtos/{produto_id}/adicionais",
-    response_model=ResponseAdicionalSchema,
-    status_code=status.HTTP_201_CREATED,
-    summary="Adiciona um adicional ao produto (admin)"
-)
-async def criar_adicional(
-    produto_id: int,
-    dados: AdicionalSchema,
     session: Session = Depends(pegar_sessao),
-    _: Usuario = Depends(verificar_admin)
+    _: Usuario       = Depends(verificar_admin),
 ):
-    """
-    Cria um adicional vinculado ao produto.
-    Chamado pelo adm.html ao salvar um novo adicional.
-    """
-    _get_produto(produto_id, session)
+    _produto_ou_404(session, produto_id)
+    return (
+        session.query(Adicional)
+        .filter(Adicional.produto_id == produto_id)
+        .order_by(Adicional.id)
+        .all()
+    )
 
-    adicional = ProdutoAdicional(
-        produto_id=produto_id,
-        nome=dados.nome,
-        descricao=dados.descricao,
-        preco=dados.preco,
-        disponivel=dados.disponivel if dados.disponivel is not None else True
+
+@adicional_router.post(
+    "/produtos/{produto_id}/adicionais",
+    response_model=AdicionalResponseSchema,
+    status_code=status.HTTP_201_CREATED,
+    summary="Cria adicional para um produto (admin)",
+)
+def criar_adicional(
+    produto_id: int,
+    dados:   AdicionalCreateSchema,
+    session: Session = Depends(pegar_sessao),
+    _: Usuario       = Depends(verificar_admin),
+):
+    _produto_ou_404(session, produto_id)
+    adicional = Adicional(
+        produto_id = produto_id,
+        nome       = dados.nome,
+        preco      = dados.preco,
+        descricao  = dados.descricao,
+        disponivel = dados.disponivel,
     )
     session.add(adicional)
-    session.commit()
-    session.refresh(adicional)
+    try:
+        session.commit()
+        session.refresh(adicional)
+    except Exception as exc:
+        session.rollback()
+        log.error("[ADICIONAL] Erro ao criar: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Erro ao salvar adicional: {exc}")
+    log.info("[ADICIONAL] Criado id=%s produto_id=%s nome=%s", adicional.id, produto_id, adicional.nome)
     return adicional
 
 
-@adicionais_router.delete(
+@adicional_router.delete(
     "/produtos/{produto_id}/adicionais/{adicional_id}",
-    summary="Remove um adicional do produto (admin)"
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove adicional de um produto (admin)",
 )
-async def deletar_adicional(
-    produto_id: int,
+def excluir_adicional(
+    produto_id:   int,
     adicional_id: int,
     session: Session = Depends(pegar_sessao),
-    _: Usuario = Depends(verificar_admin)
+    _: Usuario       = Depends(verificar_admin),
 ):
-    """
-    Remove o adicional de um produto específico.
-    Chamado pelo adm.html ao clicar em Excluir.
-    """
-    _get_produto(produto_id, session)
-
-    adicional = session.query(ProdutoAdicional).filter(
-        ProdutoAdicional.id == adicional_id,
-        ProdutoAdicional.produto_id == produto_id
-    ).first()
-
+    _produto_ou_404(session, produto_id)
+    adicional = (
+        session.query(Adicional)
+        .filter(Adicional.id == adicional_id, Adicional.produto_id == produto_id)
+        .first()
+    )
     if not adicional:
-        raise HTTPException(status_code=404, detail="Adicional não encontrado")
-
+        raise HTTPException(
+            status_code=404,
+            detail=f"Adicional id={adicional_id} nao encontrado no produto id={produto_id}.",
+        )
     session.delete(adicional)
-    session.commit()
-    return {"mensagem": f"Adicional '{adicional.nome}' removido do produto"}
+    try:
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        log.error("[ADICIONAL] Erro ao excluir: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Erro ao excluir adicional: {exc}")
+    log.info("[ADICIONAL] Excluido id=%s produto_id=%s", adicional_id, produto_id)
