@@ -219,7 +219,17 @@ async def caixa_por_data(
         raise HTTPException(status_code=400, detail="Formato inválido. Use YYYY-MM-DD")
     caixa = session.query(Caixa).filter(Caixa.data == dia).first()
     if not caixa:
-        raise HTTPException(status_code=404, detail=f"Nenhum caixa em {data_str}")
+        if not caixa:
+    return {
+        "id": 0,
+        "data": dia,
+        "caixa_inicial": 0.0,
+        "entradas": 0.0,
+        "saidas": 0.0,
+        "saldo_atual": 0.0,
+        "criado_em": datetime.now(timezone.utc),
+        "movimentacoes": [],
+    }
     return caixa
 
 
