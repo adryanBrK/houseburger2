@@ -9,9 +9,9 @@ Router agora é 100% controller:
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List
 
-from dependencias import pegar_sessao, verificar_token, verificar_admin
+from dependencias import pegar_sessao, verificar_admin
 from schemas import (
     CategoriaSchema, ResponseCategoriaSchema,
     PorcaoSchema, ResponsePorcaoSchema,
@@ -19,7 +19,7 @@ from schemas import (
     ItemPedidoSchema, FinalizarPedidoSchema,
     ReordenarCategoriasSchema,
 )
-from models import Categoria, Porcao, Pedido, Usuario
+from models import Categoria, Porcao, Usuario
 import services_pedido_service as pedido_svc
 from services_pedido_service import (
     PedidoNaoEncontradoError,
@@ -32,8 +32,11 @@ from services_pedido_service import (
 )
 
 log = logging.getLogger("order_routes")
-order_router = APIRouter(prefix="/Pedidos", tags=["Pedidos"])
 
+order_router = APIRouter(
+    prefix="/Pedidos",
+    tags=["Pedidos"]
+)
 
 # ══════════════════════════════════════════════════════════════════
 # TRADUTOR DE EXCEÇÕES
@@ -60,7 +63,6 @@ def _traduzir(exc: Exception) -> HTTPException:
 @order_router.get(
     "/categorias",
     response_model=List[ResponseCategoriaSchema],
-    summary="Lista categorias ordenadas (público)",
 )
 async def listar_categorias(session: Session = Depends(pegar_sessao)):
     return (
@@ -74,7 +76,6 @@ async def listar_categorias(session: Session = Depends(pegar_sessao)):
     "/categorias",
     response_model=ResponseCategoriaSchema,
     status_code=status.HTTP_201_CREATED,
-    summary="Cria categoria (somente admin)",
 )
 async def criar_categoria(
     dados: CategoriaSchema,
@@ -87,10 +88,25 @@ async def criar_categoria(
         raise _traduzir(exc)
 
 
+# ⚠️ CORREÇÃO AQUI → rota estática ANTES da dinâmica
+@order_router.put(
+    "/categorias/reordenar",
+    response_model=List[ResponseCategoriaSchema],
+)
+async def reordenar_categorias(
+    dados: ReordenarCategoriasSchema,
+    session: Session = Depends(pegar_sessao),
+    _: Usuario = Depends(verificar_admin),
+):
+    try:
+        return pedido_svc.reordenar_categorias(session, dados.ids)
+    except Exception as exc:
+        raise _traduzir(exc)
+
+
 @order_router.put(
     "/categorias/{categoria_id}",
     response_model=ResponseCategoriaSchema,
-    summary="Edita categoria (somente admin)",
 )
 async def editar_categoria(
     categoria_id: int,
@@ -106,7 +122,6 @@ async def editar_categoria(
 
 @order_router.delete(
     "/categorias/{categoria_id}",
-    summary="Remove categoria (somente admin)",
 )
 async def deletar_categoria(
     categoria_id: int,
@@ -119,22 +134,6 @@ async def deletar_categoria(
         raise _traduzir(exc)
 
 
-@order_router.put(
-    "/categorias/reordenar",
-    response_model=List[ResponseCategoriaSchema],
-    summary="Reordena categorias por drag-and-drop (somente admin)",
-)
-async def reordenar_categorias(
-    dados: ReordenarCategoriasSchema,
-    session: Session = Depends(pegar_sessao),
-    _: Usuario = Depends(verificar_admin),
-):
-    try:
-        return pedido_svc.reordenar_categorias(session, dados.ids)
-    except Exception as exc:
-        raise _traduzir(exc)
-
-
 # ══════════════════════════════════════════════════════════════════
 # PORÇÕES
 # ══════════════════════════════════════════════════════════════════
@@ -142,7 +141,6 @@ async def reordenar_categorias(
 @order_router.get(
     "/porcoes",
     response_model=List[ResponsePorcaoSchema],
-    summary="Lista porções",
 )
 async def listar_porcoes(session: Session = Depends(pegar_sessao)):
     return session.query(Porcao).all()
@@ -152,7 +150,6 @@ async def listar_porcoes(session: Session = Depends(pegar_sessao)):
     "/porcoes",
     response_model=ResponsePorcaoSchema,
     status_code=status.HTTP_201_CREATED,
-    summary="Cria porção (somente admin)",
 )
 async def criar_porcao(
     dados: PorcaoSchema,
@@ -168,7 +165,6 @@ async def criar_porcao(
 @order_router.put(
     "/porcoes/{porcao_id}",
     response_model=ResponsePorcaoSchema,
-    summary="Edita porção (somente admin)",
 )
 async def editar_porcao(
     porcao_id: int,
@@ -184,7 +180,6 @@ async def editar_porcao(
 
 @order_router.delete(
     "/porcoes/{porcao_id}",
-    summary="Remove porção (somente admin)",
 )
 async def deletar_porcao(
     porcao_id: int,
@@ -201,43 +196,65 @@ async def deletar_porcao(
 # PEDIDOS
 # ══════════════════════════════════════════════════════════════════
 
+@order_router.get(
+    "/pedidos",
+    response_model=List[ResponsePedidoSchema],
+)
+async def listar_pedidos(session: Session = Depends(pegar_sessao)):
+    try:
+        return pedido_svc.listar_pedidos(session)
+    except Exception as exc:
+        raise _traduzir(exc)
+
+
 @order_router.post(
     "/pedidos",
     response_model=ResponsePedidoSchema,
     status_code=status.HTTP_201_CREATED,
 )
-async def criar_pedido(dados: PedidoSchema, session: Session = Depends(pegar_sessao)):
+async def criar_pedido(
+    dados: PedidoSchema,
+    session: Session = Depends(pegar_sessao),
+):
     try:
         return pedido_svc.criar_pedido(session=session, **dados.dict())
     except Exception as exc:
         raise _traduzir(exc)
 
 
-@order_router.post("/pedido/adicionar-item/{pedido_id}")
+@order_router.post("/pedidos/adicionar-item/{pedido_id}")
 async def adicionar_item(
     pedido_id: int,
     dados: ItemPedidoSchema,
     session: Session = Depends(pegar_sessao),
 ):
     try:
-        return pedido_svc.adicionar_item(session=session, pedido_id=pedido_id, **dados.dict())
+        return pedido_svc.adicionar_item(
+            session=session,
+            pedido_id=pedido_id,
+            **dados.dict()
+        )
     except Exception as exc:
         raise _traduzir(exc)
 
 
-@order_router.post("/pedido/finalizar/{pedido_id}")
+@order_router.post("/pedidos/finalizar/{pedido_id}")
 async def finalizar_pedido(
     pedido_id: int,
     dados: FinalizarPedidoSchema,
     session: Session = Depends(pegar_sessao),
 ):
     try:
-        return pedido_svc.finalizar_pedido(session, pedido_id, **dados.dict())
+        return pedido_svc.finalizar_pedido(
+            session,
+            pedido_id,
+            **dados.dict()
+        )
     except Exception as exc:
         raise _traduzir(exc)
 
 
-@order_router.post("/pedido/cancelar/{pedido_id}")
+@order_router.post("/pedidos/cancelar/{pedido_id}")
 async def cancelar_pedido(
     pedido_id: int,
     session: Session = Depends(pegar_sessao),
