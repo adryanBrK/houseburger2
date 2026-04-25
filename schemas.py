@@ -1,6 +1,7 @@
 from pydantic import BaseModel, field_validator, model_validator
 from typing import Optional, List
 from datetime import datetime
+import re
 
 from models import StatusPedido, TipoPedido, FormaPagamento
 
@@ -37,10 +38,8 @@ class CategoriaSchema(BaseModel):
     nome:       str
     descricao:  Optional[str]  = None
     ativo:      Optional[bool] = True
-    # imagem_url e ordem são gerenciados por rotas dedicadas
-    # mas aceitos aqui para compatibilidade com frontends que os enviam
-    imagem_url: Optional[str] = None
-    ordem:      Optional[int] = 0
+    imagem_url: Optional[str]  = None
+    ordem:      Optional[int]  = 0
 
 
 class ResponseCategoriaSchema(BaseModel):
@@ -53,6 +52,14 @@ class ResponseCategoriaSchema(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ==========================
+# REORDENAÇÃO DE CATEGORIAS
+# ==========================
+class ReordenarCategoriasSchema(BaseModel):
+    """Lista de IDs na nova ordem. Ex: {"ids": [3, 1, 2, 5]}"""
+    ids: List[int]
 
 
 # ==========================
@@ -264,11 +271,14 @@ class ResponseImpressoraSchema(BaseModel):
 
 # ==========================
 # ITENS DO PEDIDO
+# produto_id adicionado — o service busca o preço do banco.
+# preco_unitario mantido por compatibilidade de schema mas ignorado pelo service.
 # ==========================
 class ItemPedidoSchema(BaseModel):
+    produto_id:     int                         # ← NOVO: service lê preço do banco
     quantidade:     int
-    nomedoproduto:  str
-    preco_unitario: float
+    nomedoproduto:  str                         # mantido para snapshot legível
+    preco_unitario: float = 0.0                 # ignorado pelo service; preço vem do banco
     variacao_id:    Optional[int]       = None
     adicionais_ids: Optional[List[int]] = None
     observacoes:    Optional[str]       = None
@@ -320,13 +330,30 @@ class PedidoSchema(BaseModel):
 
     @field_validator("telefone")
     @classmethod
-    def telefone_nao_vazio(cls, v):
+    def telefone_valido(cls, v):
+        """
+        Validação reforçada:
+          - Remove caracteres não numéricos (ex: (81) 9 9999-9999 → 81999999999)
+          - Exige mínimo de 10 dígitos (DDD + número)
+          - Exige máximo de 11 dígitos (com 9º dígito)
+        """
         if not v or not v.strip():
             raise ValueError("Telefone é obrigatório")
-        digits = "".join(c for c in v if c.isdigit())
-        if len(digits) < 8:
-            raise ValueError("Telefone inválido — informe pelo menos 8 dígitos")
-        return v.strip()
+
+        apenas_numeros = re.sub(r"\D", "", v)
+
+        if len(apenas_numeros) < 10:
+            raise ValueError(
+                "Telefone inválido — informe DDD + número (mínimo 10 dígitos). "
+                f"Recebido: '{v}' → {len(apenas_numeros)} dígito(s)"
+            )
+        if len(apenas_numeros) > 11:
+            raise ValueError(
+                f"Telefone inválido — máximo 11 dígitos. "
+                f"Recebido: {len(apenas_numeros)} dígitos"
+            )
+
+        return apenas_numeros  # normalizado: somente dígitos
 
     @field_validator("tipo_pedido")
     @classmethod
@@ -464,18 +491,5 @@ class ResponseVendasSchema(BaseModel):
 # UPLOAD DE IMAGEM (Cloudinary)
 # ==========================
 class ResponseUploadImagemSchema(BaseModel):
-    """Retorno padronizado após upload bem-sucedido."""
     mensagem:   str
     imagem_url: str
-
-
-# ==========================
-# REORDENAÇÃO DE CATEGORIAS
-# ==========================
-class ReordenarCategoriasSchema(BaseModel):
-    """
-    Lista de IDs na nova ordem desejada.
-    Exemplo: {"ids": [3, 1, 2, 5]}
-    A posição na lista define o valor de `ordem` de cada categoria.
-    """
-    ids: List[int]
