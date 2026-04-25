@@ -5,9 +5,9 @@ from typing import List, Optional
 from dependencias import pegar_sessao, verificar_token, verificar_admin
 from schemas import (
     ProdutoSchema, ResponseProdutoSchema, ResponseProdutoDetalhadoSchema,
-    VariacaoSchema, ResponseVariacaoSchema,
+    VariacaoSchema, ResponseVariacaoSchema, ResponseAdicionalSchema
 )
-from models import Produto, Categoria, Porcao, VariacaoProduto, Usuario
+from models import Produto, Categoria, Porcao, VariacaoProduto, Usuario, Adicional
 
 product_router = APIRouter(prefix="/Produto", tags=["Produtos"])
 
@@ -323,3 +323,29 @@ async def deletar_variacao(
     session.delete(variacao)
     session.commit()
     return {"mensagem": f"Variação '{variacao.nome}' removida com sucesso"}
+
+# ============================================================
+# ADICIONAIS DO PRODUTO
+# Rota: /Produto/produtos/{produto_id}/adicionais
+# ============================================================
+
+@product_router.get(
+    "/produtos/{produto_id}/adicionais",
+    response_model=List[ResponseAdicionalSchema],
+    summary="Lista adicionais de um produto"
+)
+async def listar_adicionais_produto(
+    produto_id: int,
+    session: Session = Depends(pegar_sessao),
+):
+    """
+    Retorna todos os adicionais vinculados ao produto.
+    """
+    _get_produto(produto_id, session)
+
+    adicionais = session.query(Adicional).filter(
+        Adicional.produto_id == produto_id,
+        Adicional.ativo == True
+    ).all()
+
+    return adicionais
