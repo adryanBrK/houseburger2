@@ -424,3 +424,11 @@ def cancelar_pedido(session: Session, pedido_id: int) -> Pedido:
 
     log.info("[PedidoService] Cancelado pedido #%s", pedido.codigo)
     return pedido
+
+def listar_pedidos(session: Session):
+    return (
+        session.query(Pedido)
+        .options(joinedload(Pedido.itens))
+        .order_by(Pedido.id.desc())
+        .all()
+    )
