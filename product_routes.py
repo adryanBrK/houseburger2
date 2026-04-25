@@ -7,7 +7,7 @@ from schemas import (
     ProdutoSchema, ResponseProdutoSchema, ResponseProdutoDetalhadoSchema,
     VariacaoSchema, ResponseVariacaoSchema, ResponseAdicionalSchema
 )
-from models import Produto, Categoria, Porcao, VariacaoProduto, Usuario, Adicional
+from models import Produto, Categoria, Porcao, VariacaoProduto, Usuario
 
 product_router = APIRouter(prefix="/Produto", tags=["Produtos"])
 
