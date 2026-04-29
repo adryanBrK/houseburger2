@@ -291,10 +291,13 @@ def adicionar_item(
             f"Pedido já está {pedido.status} — não é possível adicionar itens"
         )
 
-    # Produto — preço do banco
+    # Produto — preço do banco + adicionais carregados junto (evita N+1 na validação)
     produto = (
         session.query(Produto)
-        .options(joinedload(Produto.variacoes))
+        .options(
+            joinedload(Produto.variacoes),
+            joinedload(Produto.adicionais),   # necessário para validar vínculo
+        )
         .filter(Produto.id == produto_id)
         .first()
     )
@@ -320,17 +323,26 @@ def adicionar_item(
         preco_base   += variacao.acrescimo
         variacao_nome = variacao.nome
 
-    # Adicionais — batch query
+    # Adicionais — batch query + validação de vínculo com o produto
     adicionais_nomes = None
     adicionais_preco = 0.0
 
     if adicionais_ids:
+        # IDs dos adicionais vinculados a este produto (já carregados via joinedload)
+        ids_vinculados = {a.id for a in produto.adicionais}
+
         mapa = _buscar_adicionais_em_lote(session, adicionais_ids)
         nomes = []
         for aid in adicionais_ids:
             ad = mapa.get(aid)
             if not ad:
                 raise AdicionalInativoError(f"Adicional id={aid} não encontrado")
+            # Regra crítica: adicional deve estar vinculado a este produto
+            if aid not in ids_vinculados:
+                raise AdicionalInativoError(
+                    f"Adicional '{ad.nome}' (id={aid}) não está disponível "
+                    f"para o produto '{produto.nome}' (id={produto_id})"
+                )
             if not ad.ativo:
                 raise AdicionalInativoError(f"Adicional '{ad.nome}' está inativo")
             nomes.append(ad.nome)
