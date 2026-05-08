@@ -1,51 +1,55 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy import Column, String, Integer, Float, Boolean
+from sqlalchemy import Column, String, Integer, Float, Boolean, Text
 from typing import List, Optional
 from pydantic import BaseModel
 from dependencias import pegar_sessao, verificar_admin
 from models import Base, db, Usuario
+import json
 
 extras_router = APIRouter(prefix="/Extras", tags=["Extras"])
 
-
 # ==========================
-# MODEL
+# MODELS
 # ==========================
-
 class Extra(Base):
     __tablename__ = "extras"
-
     id    = Column(Integer, primary_key=True, autoincrement=True)
     nome  = Column(String, nullable=False, unique=True)
     preco = Column(Float, nullable=False)
     ativo = Column(Boolean, default=True)
 
+class ConfigExtra(Base):
+    __tablename__ = "config_extras"
+    chave = Column(String, primary_key=True)
+    valor = Column(Text, nullable=False)
+
+Base.metadata.create_all(bind=db)
 
 # ==========================
 # SCHEMAS
 # ==========================
-
 class ExtraSchema(BaseModel):
     nome:  str
     preco: float
     ativo: Optional[bool] = True
-
 
 class ResponseExtraSchema(BaseModel):
     id:    int
     nome:  str
     preco: float
     ativo: bool
-
     class Config:
         from_attributes = True
 
+class DuploSchema(BaseModel):
+    simples: float
+    pro:     float
+    promax:  float
 
 # ==========================
-# ROTAS
+# ROTAS — EXTRAS
 # ==========================
-
 @extras_router.get("/", response_model=List[ResponseExtraSchema], summary="Lista extras globais")
 async def listar_extras(
     apenas_ativos: bool = True,
@@ -56,13 +60,7 @@ async def listar_extras(
         q = q.filter(Extra.ativo == True)
     return q.all()
 
-
-@extras_router.post(
-    "/",
-    response_model=ResponseExtraSchema,
-    status_code=status.HTTP_201_CREATED,
-    summary="Cria extra global (admin)"
-)
+@extras_router.post("/", response_model=ResponseExtraSchema, status_code=status.HTTP_201_CREATED, summary="Cria extra global (admin)")
 async def criar_extra(
     dados: ExtraSchema,
     session: Session = Depends(pegar_sessao),
@@ -71,17 +69,11 @@ async def criar_extra(
     existe = session.query(Extra).filter(Extra.nome == dados.nome).first()
     if existe:
         raise HTTPException(status_code=400, detail="Extra já existe")
-
-    extra = Extra(
-        nome=dados.nome,
-        preco=dados.preco,
-        ativo=dados.ativo if dados.ativo is not None else True
-    )
+    extra = Extra(nome=dados.nome, preco=dados.preco, ativo=dados.ativo if dados.ativo is not None else True)
     session.add(extra)
     session.commit()
     session.refresh(extra)
     return extra
-
 
 @extras_router.put("/{extra_id}", response_model=ResponseExtraSchema, summary="Atualiza extra (admin)")
 async def atualizar_extra(
@@ -93,16 +85,13 @@ async def atualizar_extra(
     extra = session.query(Extra).filter(Extra.id == extra_id).first()
     if not extra:
         raise HTTPException(status_code=404, detail="Extra não encontrado")
-
     extra.nome = dados.nome
     extra.preco = dados.preco
     if dados.ativo is not None:
         extra.ativo = dados.ativo
-
     session.commit()
     session.refresh(extra)
     return extra
-
 
 @extras_router.delete("/{extra_id}", summary="Remove extra (admin)")
 async def deletar_extra(
@@ -113,7 +102,30 @@ async def deletar_extra(
     extra = session.query(Extra).filter(Extra.id == extra_id).first()
     if not extra:
         raise HTTPException(status_code=404, detail="Extra não encontrado")
-
     session.delete(extra)
     session.commit()
     return {"mensagem": f"Extra '{extra.nome}' removido"}
+
+# ==========================
+# ROTAS — DUPLO
+# ==========================
+@extras_router.get("/duplo", summary="Retorna preços do Duplo")
+async def get_duplo(session: Session = Depends(pegar_sessao)):
+    row = session.query(ConfigExtra).filter(ConfigExtra.chave == "duplo").first()
+    if not row:
+        return {"simples": 6.0, "pro": 8.0, "promax": 10.0}
+    return json.loads(row.valor)
+
+@extras_router.put("/duplo", summary="Salva preços do Duplo (admin)")
+async def set_duplo(
+    dados: DuploSchema,
+    session: Session = Depends(pegar_sessao),
+    _: Usuario = Depends(verificar_admin),
+):
+    row = session.query(ConfigExtra).filter(ConfigExtra.chave == "duplo").first()
+    if row:
+        row.valor = json.dumps(dados.model_dump())
+    else:
+        session.add(ConfigExtra(chave="duplo", valor=json.dumps(dados.model_dump())))
+    session.commit()
+    return dados
