@@ -429,3 +429,19 @@ class LogImpressao(Base):
 
     pedido     = relationship("Pedido", back_populates="logs_impressao")
     impressora = relationship("Impressora", back_populates="logs")
+
+
+# ==========================
+# CONFIGURAÇÕES EXTRAS
+# Armazena pares chave/valor genéricos em JSON.
+# Usado para: preços do duplo, configurações de sistema, etc.
+# A chave é a PK — sem autoincrement, o nome é o identificador.
+# ==========================
+class ConfigExtra(Base):
+    __tablename__ = "config_extras"
+
+    chave = Column(String, primary_key=True, nullable=False)
+    valor = Column(Text,   nullable=False)    # JSON serializado
+
+    def __repr__(self):
+        return f"<ConfigExtra chave={self.chave!r}>"
