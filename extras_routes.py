@@ -1,38 +1,15 @@
-"""
-extras_routes.py
-=================
-Sistema completo de:
-  • Extras globais
-  • Configurações extras em JSON
-  • Configuração persistente do "duplo"
-
-CORREÇÃO IMPORTANTE:
-As rotas literais (/duplo) vêm ANTES das rotas dinâmicas (/{extra_id} e /{chave}),
-evitando conflito de roteamento no FastAPI.
-
-Exemplo do problema resolvido:
-  GET /Extras/duplo
-ANTES:
-  FastAPI tentava jogar em /{extra_id}
-AGORA:
-  Vai corretamente para /duplo
-
-Registro no main.py:
-    from extras_routes import extras_router
-    app.include_router(extras_router)
-"""
-
 import json
 import logging
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, field_validator
-from sqlalchemy import Boolean, Column, Float, Integer, String, Text
+from sqlalchemy import Boolean, Column, Float, Integer, String
 from sqlalchemy.orm import Session
 
 from dependencias import pegar_sessao, verificar_admin
-from models import Base, Usuario, db
+from models import Base, Usuario, db, ConfigExtra
+
 
 # =========================================================
 # CONFIG
@@ -45,6 +22,7 @@ extras_router = APIRouter(
     tags=["Extras"]
 )
 
+
 # =========================================================
 # MODELS
 # =========================================================
@@ -52,20 +30,14 @@ extras_router = APIRouter(
 class Extra(Base):
     __tablename__ = "extras"
 
-    id     = Column(Integer, primary_key=True, autoincrement=True)
-    nome   = Column(String, nullable=False, unique=True)
-    preco  = Column(Float, nullable=False)
-    ativo  = Column(Boolean, default=True)
-
-
-class ConfigExtra(Base):
-    __tablename__ = "config_extras"
-
-    chave = Column(String, primary_key=True)
-    valor = Column(Text, nullable=False)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    nome = Column(String, nullable=False, unique=True)
+    preco = Column(Float, nullable=False)
+    ativo = Column(Boolean, default=True)
 
 
 Base.metadata.create_all(bind=db)
+
 
 # =========================================================
 # SCHEMAS — EXTRAS
@@ -93,6 +65,7 @@ class ResponseExtraSchema(BaseModel):
     class Config:
         from_attributes = True
 
+
 # =========================================================
 # SCHEMAS — DUPLO
 # =========================================================
@@ -108,6 +81,7 @@ class DuploSchema(BaseModel):
         if v < 0:
             raise ValueError("Preço não pode ser negativo")
         return round(v, 2)
+
 
 # =========================================================
 # SCHEMAS — CONFIG GENÉRICA
@@ -125,6 +99,7 @@ class ResponseConfigExtraSchema(BaseModel):
     class Config:
         from_attributes = True
 
+
 # =========================================================
 # DEFAULTS
 # =========================================================
@@ -134,6 +109,7 @@ _DUPLO_DEFAULT = {
     "pro": 8.0,
     "promax": 10.0,
 }
+
 
 # =========================================================
 # HELPERS
@@ -162,6 +138,7 @@ def _upsert_config(chave: str, valor: Any, session: Session):
         session.add(cfg)
 
     return cfg
+
 
 # =========================================================
 # ROTAS — DUPLO
@@ -228,6 +205,7 @@ async def put_duplo(
         )
 
     return dados
+
 
 # =========================================================
 # ROTAS — EXTRAS GLOBAIS
@@ -378,9 +356,9 @@ async def deletar_extra(
         "mensagem": f"Extra '{extra.nome}' removido"
     }
 
+
 # =========================================================
 # ROTAS — CONFIGS GENÉRICAS
-# DEVEM VIR DEPOIS DAS LITERAIS
 # =========================================================
 
 @extras_router.get(
